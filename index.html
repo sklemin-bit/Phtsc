@@ -1,0 +1,132 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ScanBot — редактор точек</title>
+  <style>
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto; background:#111; color:#eee; }
+    #wrap { display:flex; flex-direction:column; height:100dvh; }
+    #canvasWrap { flex:1; display:flex; align-items:center; justify-content:center; background:#000; }
+    canvas { max-width:100%; max-height:100%; touch-action:none; }
+    #bar { padding:12px; display:flex; gap:8px; background:#111; border-top:1px solid #222; }
+    button { padding:10px 14px; border:0; border-radius:10px; background:#2563eb; color:#fff; font-weight:600; }
+    .ghost { background:#333; }
+    .hint { margin-left:auto; opacity:.7; font-size:13px; }
+  </style>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+<div id="wrap">
+  <div id="canvasWrap"><canvas id="c"></canvas></div>
+  <div id="bar">
+    <button id="reset" class="ghost">Сброс</button>
+    <button id="send">Готово</button>
+    <div class="hint">Нажмите 4 угла: TL → TR → BR → BL</div>
+  </div>
+</div>
+<script>
+const tg = window.Telegram.WebApp;
+tg.expand(); // на весь экран
+// Ожидаем, что бот передаст URL исходной картинки через параметр ?img=...
+const urlParams = new URLSearchParams(location.search);
+const imgUrl = urlParams.get('img'); // необязательно; можно отрисовать превью позже
+const MAXW = 1600;
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const img = new Image();
+const points = []; // [{x,y}, ...] TL,TR,BR,BL
+let scale = 1, offX = 0, offY = 0;
+
+function draw(){
+  ctx.clearRect(0,0,canvas.width, canvas.height);
+  if (img.complete && img.naturalWidth){
+    ctx.drawImage(img, offX, offY, img.width*scale, img.height*scale);
+  }
+  // точки/линии
+  if (points.length){
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#00ff88';
+    ctx.fillStyle = '#00ff88';
+    ctx.beginPath();
+    points.forEach((p,i)=>{
+      if(i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y);
+    });
+    if(points.length===4){ ctx.closePath(); }
+    ctx.stroke();
+    points.forEach(p=>{
+      ctx.beginPath(); ctx.arc(p.x,p.y,6,0,Math.PI*2); ctx.fill();
+    });
+  }
+}
+
+function setCanvasSize(){
+  const r = document.getElementById('canvasWrap').getBoundingClientRect();
+  canvas.width = Math.floor(r.width);
+  canvas.height = Math.floor(r.height);
+  draw();
+}
+
+window.addEventListener('resize', setCanvasSize);
+setCanvasSize();
+
+if (imgUrl){
+  img.crossOrigin = 'anonymous';
+  img.onload = ()=>{
+    const k = Math.min(MAXW/img.naturalWidth, MAXW/img.naturalHeight, 1);
+    img.width = img.naturalWidth * k;
+    img.height = img.naturalHeight * k;
+    scale = 1; offX = (canvas.width - img.width)/2; offY = (canvas.height - img.height)/2;
+    draw();
+  };
+  img.src = imgUrl;
+}
+
+function canvasToImageCoords(cx, cy){
+  // переводим координаты клика в координаты исходника (до скейла/смещения)
+  const ix = (cx - offX) / scale;
+  const iy = (cy - offY) / scale;
+  // Преобразуем к оригинальному масштабу (если картинку ужали до MAXW)
+  const sx = img.naturalWidth / img.width;
+  const sy = img.naturalHeight / img.height;
+  return { x: Math.max(0, Math.min(img.naturalWidth, ix * sx)),
+           y: Math.max(0, Math.min(img.naturalHeight, iy * sy)) };
+}
+
+canvas.addEventListener('pointerdown', (e)=>{
+  const rect = canvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left;
+  const cy = e.clientY - rect.top;
+  // визуальная точка
+  const vis = { x: cx, y: cy };
+  const src = canvasToImageCoords(cx, cy);
+  // храним обе системы координат (визуальные — для перерисовки)
+  points.push(vis);
+  // Если 4 клика — отправляем
+  if(points.length===4){
+    // Формируем данные в координатах исходного изображения
+    const pts = [0,1,2,3].map(i=>{
+      const p = points[i];
+      const s = canvasToImageCoords(p.x, p.y);
+      return [ Math.round(s.x), Math.round(s.y) ];
+    });
+    tg.sendData(JSON.stringify({ pts }));
+  }
+  draw();
+});
+
+document.getElementById('reset').onclick = ()=>{
+  points.length = 0; draw();
+};
+document.getElementById('send').onclick = ()=>{
+  if(points.length!==4){ tg.showPopup({title:'Нужно 4 точки', message:'Кликните по всем углам документа в порядке TL → TR → BR → BL'}); return; }
+  const pts = [0,1,2,3].map(i=>{
+    const s = canvasToImageCoords(points[i].x, points[i].y);
+    return [ Math.round(s.x), Math.round(s.y) ];
+  });
+  tg.sendData(JSON.stringify({ pts }));
+};
+</script>
+</body>
+</html>
