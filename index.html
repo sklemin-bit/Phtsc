@@ -101,11 +101,11 @@ function draw() {
 
 if (fileId) {
   showMsg('Загружаем изображение…');
-  fetch(`https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getFile?file_id=${fileId}`)
+  fetch(`https://api.telegram.org/bot"7545863960:AAGRHjbGkVSEKlPWkMI0kBYyajceLm164cg"/getFile?file_id=${fileId}`)
     .then(response => response.json())
     .then(data => {
       if (data.ok) {
-        const filePath = `https://api.telegram.org/file/bot<YOUR_BOT_TOKEN>/${data.result.file_path}`;
+        const filePath = `https://api.telegram.org/file/bot"7545863960:AAGRHjbGkVSEKlPWkMI0kBYyajceLm164cg"/${data.result.file_path}`;
         img.onload = ()=>{ hideMsg(); layoutImage(); draw(); };
         img.onerror = ()=>{ showMsg('Не удалось загрузить изображение.'); draw(); };
         img.src = filePath;
@@ -121,3 +121,4 @@ resizeCanvas();
 </script>
 </body>
 </html>
+
