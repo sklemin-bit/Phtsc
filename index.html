@@ -1,21 +1,21 @@
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>ScanBot — выбор углов</title>
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <style>
-    html,body{height:100%;margin:0;background:#000;color:#eee;font-family:system-ui,-apple-system,Segoe UI,Roboto}
-    #wrap{height:100%;display:flex;flex-direction:column}
-    #stage{flex:1;display:flex;align-items:center;justify-content:center;background:#000;position:relative}
-    #msg{position:absolute;inset:auto 12px 12px 12px;background:rgba(0,0,0,.6);padding:10px 12px;border-radius:10px;border:1px solid #222;font-size:14px}
-    canvas{max-width:100%;max-height:100%;touch-action:none;display:block}
-    #bar{padding:12px;display:flex;gap:8px;border-top:1px solid #222;background:#111}
-    button{padding:10px 14px;border:0;border-radius:10px;background:#2563eb;color:#fff;font-weight:600}
-    .ghost{background:#333}
-    .hint{margin-left:auto;opacity:.7;font-size:13px}
-  </style>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>ScanBot — выбор углов</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  html,body{height:100%;margin:0;background:#000;color:#eee;font-family:system-ui,-apple-system,Segoe UI,Roboto}
+  #wrap{height:100%;display:flex;flex-direction:column}
+  #stage{flex:1;display:flex;align-items:center;justify-content:center;background:#000;position:relative}
+  #msg{position:absolute;inset:auto 12px 12px 12px;background:rgba(0,0,0,.6);padding:10px 12px;border-radius:10px;border:1px solid #222;font-size:14px}
+  canvas{max-width:100%;max-height:100%;touch-action:none;display:block}
+  #bar{padding:12px;display:flex;gap:8px;border-top:1px solid #222;background:#111}
+  button{padding:10px 14px;border:0;border-radius:10px;background:#2563eb;color:#fff;font-weight:600}
+  .ghost{background:#333}
+  .hint{margin-left:auto;opacity:.7;font-size:13px}
+</style>
 </head>
 <body>
 <div id="wrap">
@@ -34,14 +34,13 @@
 const tg = window.Telegram.WebApp; tg.expand();
 
 const urlParams = new URLSearchParams(location.search);
-const fileId = urlParams.get("file_id"); // бот передаёт сюда file_id
-
+const imgURL = urlParams.get("img"); // бот передаёт сюда превью
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 const msg = document.getElementById('msg');
 
-const pointsVis = [];     // точки в координатах canvas
-const pointsSrc = [];     // точки в координатах исходного изображения
+const pointsVis = [];     // точки в координатах canvas (для рисования)
+const pointsSrc = [];     // точки в координатах исходного изображения (для отправки)
 
 const img = new Image();
 img.crossOrigin = "anonymous"; // на случай CORS
@@ -99,26 +98,61 @@ function draw() {
   }
 }
 
-if (fileId) {
+function clientToCanvasAndImage(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const xCss = clientX - rect.left;
+  const yCss = clientY - rect.top;
+  const x = xCss * dpr;
+  const y = yCss * dpr;
+  const inside = (x >= fit.x && x <= fit.x + fit.w && y >= fit.y && y <= fit.y + fit.h);
+  let sx = null, sy = null;
+  if (inside && img.naturalWidth) {
+    const nx = (x - fit.x) / fit.w; // 0..1
+    const ny = (y - fit.y) / fit.h; // 0..1
+    sx = nx * img.naturalWidth;
+    sy = ny * img.naturalHeight;
+  }
+  return { x, y, inside, sx, sy };
+}
+
+canvas.addEventListener('pointerdown', (e)=>{
+  if (pointsVis.length>=4) return;
+  const { x, y, inside, sx, sy } = clientToCanvasAndImage(e.clientX, e.clientY);
+  // не даём ставить точки за пределами изображения (по чёрным полям)
+  if (!inside) { showMsg('Кликайте по изображению (не по чёрным полям)'); return; }
+  hideMsg();
+  pointsVis.push({ x, y });
+  // если изображение не загрузилось — перестраховка (не отправляем мусор)
+  if (sx==null || sy==null) { showMsg('Изображение не загружено — точки не сохраняются'); return; }
+  pointsSrc.push([ Math.round(sx), Math.round(sy) ]);
+  draw();
+});
+
+document.getElementById('reset').addEventListener('click', ()=>{
+  pointsVis.length = 0; pointsSrc.length = 0; hideMsg(); draw();
+});
+
+document.getElementById('send').addEventListener('click', ()=>{
+  if (pointsSrc.length !== 4) {
+    tg.showPopup({title:'Нужно 4 точки',message:'Кликните четыре угла в порядке ↖ ↗ ↘ ↙'});
+    return;
+  }
+  tg.sendData(JSON.stringify({ pts: pointsSrc }));
+  tg.close();
+});
+
+window.addEventListener('resize', resizeCanvas);
+
+// загрузка изображения
+if (imgURL) {
   showMsg('Загружаем изображение…');
-  fetch(`https://api.telegram.org/bot"7545863960:AAGRHjbGkVSEKlPWkMI0kBYyajceLm164cg"/getFile?file_id=${fileId}`)
-    .then(response => response.json())
-    .then(data => {
-      if (data.ok) {
-        const filePath = `https://api.telegram.org/file/bot"7545863960:AAGRHjbGkVSEKlPWkMI0kBYyajceLm164cg"/${data.result.file_path}`;
-        img.onload = ()=>{ hideMsg(); layoutImage(); draw(); };
-        img.onerror = ()=>{ showMsg('Не удалось загрузить изображение.'); draw(); };
-        img.src = filePath;
-      } else {
-        showMsg('Не удалось загрузить изображение'); draw();
-      }
-    });
+  img.onload = ()=>{ hideMsg(); layoutImage(); draw(); };
+  img.onerror = ()=>{ showMsg('Не удалось загрузить превью. Вернитесь и откройте редактор ещё раз.'); draw(); };
+  img.src = imgURL;
 } else {
   showMsg('Превью не передано. Вернитесь и откройте редактор из бота, чтобы увидеть исходник.');
 }
-
 resizeCanvas();
 </script>
 </body>
 </html>
-
