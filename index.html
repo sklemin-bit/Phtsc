@@ -35,6 +35,7 @@ const tg = window.Telegram.WebApp; tg.expand();
 
 const urlParams = new URLSearchParams(location.search);
 const fileId = urlParams.get("file_id"); // бот передаёт сюда file_id
+
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 const msg = document.getElementById('msg');
