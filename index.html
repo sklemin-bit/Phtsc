@@ -1,21 +1,21 @@
 <!doctype html>
 <html lang="ru">
 <head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>ScanBot — выбор углов</title>
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
-<style>
-  html,body{height:100%;margin:0;background:#000;color:#eee;font-family:system-ui,-apple-system,Segoe UI,Roboto}
-  #wrap{height:100%;display:flex;flex-direction:column}
-  #stage{flex:1;display:flex;align-items:center;justify-content:center;background:#000;position:relative}
-  #msg{position:absolute;inset:auto 12px 12px 12px;background:rgba(0,0,0,.6);padding:10px 12px;border-radius:10px;border:1px solid #222;font-size:14px}
-  canvas{max-width:100%;max-height:100%;touch-action:none;display:block}
-  #bar{padding:12px;display:flex;gap:8px;border-top:1px solid #222;background:#111}
-  button{padding:10px 14px;border:0;border-radius:10px;background:#2563eb;color:#fff;font-weight:600}
-  .ghost{background:#333}
-  .hint{margin-left:auto;opacity:.7;font-size:13px}
-</style>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>ScanBot — выбор углов</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    html,body{height:100%;margin:0;background:#000;color:#eee;font-family:system-ui,-apple-system,Segoe UI,Roboto}
+    #wrap{height:100%;display:flex;flex-direction:column}
+    #stage{flex:1;display:flex;align-items:center;justify-content:center;background:#000;position:relative}
+    #msg{position:absolute;inset:auto 12px 12px 12px;background:rgba(0,0,0,.6);padding:10px 12px;border-radius:10px;border:1px solid #222;font-size:14px}
+    canvas{max-width:100%;max-height:100%;touch-action:none;display:block}
+    #bar{padding:12px;display:flex;gap:8px;border-top:1px solid #222;background:#111}
+    button{padding:10px 14px;border:0;border-radius:10px;background:#2563eb;color:#fff;font-weight:600}
+    .ghost{background:#333}
+    .hint{margin-left:auto;opacity:.7;font-size:13px}
+  </style>
 </head>
 <body>
 <div id="wrap">
@@ -34,22 +34,25 @@
 const tg = window.Telegram.WebApp; tg.expand();
 
 const urlParams = new URLSearchParams(location.search);
-const imgURL = urlParams.get("img"); // бот передаёт сюда превью
+const fileId = urlParams.get("file_id"); // бот передаёт сюда file_id
+
+// Новый код для загрузки изображения с использованием file_id
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 const msg = document.getElementById('msg');
-
-const pointsVis = [];     // точки в координатах canvas (для рисования)
-const pointsSrc = [];     // точки в координатах исходного изображения (для отправки)
+const pointsVis = [];     // точки в координатах canvas
+const pointsSrc = [];     // точки в координатах исходного изображения
 
 const img = new Image();
 img.crossOrigin = "anonymous"; // на случай CORS
 let fit = { x:0, y:0, w:0, h:0 };   // прямоугольник вписывания изображения в canvas
 let dpr = window.devicePixelRatio || 1;
 
+// Функция для отображения сообщений
 function showMsg(text){ msg.textContent = text; msg.hidden = false; }
 function hideMsg(){ msg.hidden = true; }
 
+// Функция для изменения размера канваса
 function resizeCanvas() {
   const rect = canvas.parentElement.getBoundingClientRect();
   const cssW = Math.max(320, Math.floor(rect.width));
@@ -63,6 +66,7 @@ function resizeCanvas() {
   draw();
 }
 
+// Функция для расположения изображения
 function layoutImage() {
   if (!img.naturalWidth || !img.naturalHeight) { fit = {x:0,y:0,w:0,h:0}; return; }
   const cw = canvas.width, ch = canvas.height;
@@ -76,6 +80,7 @@ function layoutImage() {
   fit = { x, y, w, h };
 }
 
+// Функция рисования
 function draw() {
   // фон
   ctx.fillStyle = '#000';
@@ -98,60 +103,25 @@ function draw() {
   }
 }
 
-function clientToCanvasAndImage(clientX, clientY) {
-  const rect = canvas.getBoundingClientRect();
-  const xCss = clientX - rect.left;
-  const yCss = clientY - rect.top;
-  const x = xCss * dpr;
-  const y = yCss * dpr;
-  const inside = (x >= fit.x && x <= fit.x + fit.w && y >= fit.y && y <= fit.y + fit.h);
-  let sx = null, sy = null;
-  if (inside && img.naturalWidth) {
-    const nx = (x - fit.x) / fit.w; // 0..1
-    const ny = (y - fit.y) / fit.h; // 0..1
-    sx = nx * img.naturalWidth;
-    sy = ny * img.naturalHeight;
-  }
-  return { x, y, inside, sx, sy };
-}
-
-canvas.addEventListener('pointerdown', (e)=>{
-  if (pointsVis.length>=4) return;
-  const { x, y, inside, sx, sy } = clientToCanvasAndImage(e.clientX, e.clientY);
-  // не даём ставить точки за пределами изображения (по чёрным полям)
-  if (!inside) { showMsg('Кликайте по изображению (не по чёрным полям)'); return; }
-  hideMsg();
-  pointsVis.push({ x, y });
-  // если изображение не загрузилось — перестраховка (не отправляем мусор)
-  if (sx==null || sy==null) { showMsg('Изображение не загружено — точки не сохраняются'); return; }
-  pointsSrc.push([ Math.round(sx), Math.round(sy) ]);
-  draw();
-});
-
-document.getElementById('reset').addEventListener('click', ()=>{
-  pointsVis.length = 0; pointsSrc.length = 0; hideMsg(); draw();
-});
-
-document.getElementById('send').addEventListener('click', ()=>{
-  if (pointsSrc.length !== 4) {
-    tg.showPopup({title:'Нужно 4 точки',message:'Кликните четыре угла в порядке ↖ ↗ ↘ ↙'});
-    return;
-  }
-  tg.sendData(JSON.stringify({ pts: pointsSrc }));
-  tg.close();
-});
-
-window.addEventListener('resize', resizeCanvas);
-
-// загрузка изображения
-if (imgURL) {
+// Загрузка изображения с использованием file_id
+if (fileId) {
   showMsg('Загружаем изображение…');
-  img.onload = ()=>{ hideMsg(); layoutImage(); draw(); };
-  img.onerror = ()=>{ showMsg('Не удалось загрузить превью. Вернитесь и откройте редактор ещё раз.'); draw(); };
-  img.src = imgURL;
+  fetch(`https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getFile?file_id=${fileId}`)
+    .then(response => response.json())
+    .then(data => {
+      if (data.ok) {
+        const filePath = `https://api.telegram.org/file/bot<YOUR_BOT_TOKEN>/${data.result.file_path}`;
+        img.onload = ()=>{ hideMsg(); layoutImage(); draw(); };
+        img.onerror = ()=>{ showMsg('Не удалось загрузить изображение.'); draw(); };
+        img.src = filePath;
+      } else {
+        showMsg('Не удалось загрузить изображение'); draw();
+      }
+    });
 } else {
   showMsg('Превью не передано. Вернитесь и откройте редактор из бота, чтобы увидеть исходник.');
 }
+
 resizeCanvas();
 </script>
 </body>
