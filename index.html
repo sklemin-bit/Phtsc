@@ -8,7 +8,8 @@
 <style>
   html,body{height:100%;margin:0;background:#000;color:#eee;font-family:system-ui,-apple-system,Segoe UI,Roboto}
   #wrap{height:100%;display:flex;flex-direction:column}
-  #stage{flex:1;display:flex;align-items:center;justify-content:center;background:#000}
+  #stage{flex:1;display:flex;align-items:center;justify-content:center;background:#000;position:relative}
+  #msg{position:absolute;inset:auto 12px 12px 12px;background:rgba(0,0,0,.6);padding:10px 12px;border-radius:10px;border:1px solid #222;font-size:14px}
   canvas{max-width:100%;max-height:100%;touch-action:none;display:block}
   #bar{padding:12px;display:flex;gap:8px;border-top:1px solid #222;background:#111}
   button{padding:10px 14px;border:0;border-radius:10px;background:#2563eb;color:#fff;font-weight:600}
@@ -18,7 +19,10 @@
 </head>
 <body>
 <div id="wrap">
-  <div id="stage"><canvas id="c"></canvas></div>
+  <div id="stage">
+    <canvas id="c"></canvas>
+    <div id="msg" hidden></div>
+  </div>
   <div id="bar">
     <button id="reset" class="ghost">Сброс</button>
     <button id="send">✅ Отправить</button>
@@ -30,20 +34,22 @@
 const tg = window.Telegram.WebApp; tg.expand();
 
 const urlParams = new URLSearchParams(location.search);
-const imgURL = urlParams.get("img"); // желательно передавать сюда ссылку на оригинал
-
+const imgURL = urlParams.get("img"); // бот передаёт сюда превью
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
+const msg = document.getElementById('msg');
 
-const pointsVis = [];     // точки в координатах canvas (для отрисовки)
+const pointsVis = [];     // точки в координатах canvas (для рисования)
 const pointsSrc = [];     // точки в координатах исходного изображения (для отправки)
 
 const img = new Image();
-let fit = { x:0, y:0, w:0, h:0 };   // прямоугольник, в который вписано изображение на canvas
-let scaleVis = 1;                    // множитель: пиксели CSS -> пиксели canvas
+img.crossOrigin = "anonymous"; // на случай CORS
+let fit = { x:0, y:0, w:0, h:0 };   // прямоугольник вписывания изображения в canvas
 let dpr = window.devicePixelRatio || 1;
 
-// подгон размера канваса под контейнер с учётом devicePixelRatio
+function showMsg(text){ msg.textContent = text; msg.hidden = false; }
+function hideMsg(){ msg.hidden = true; }
+
 function resizeCanvas() {
   const rect = canvas.parentElement.getBoundingClientRect();
   const cssW = Math.max(320, Math.floor(rect.width));
@@ -53,35 +59,30 @@ function resizeCanvas() {
   canvas.style.height = cssH + "px";
   canvas.width = Math.floor(cssW * dpr);
   canvas.height = Math.floor(cssH * dpr);
-  scaleVis = dpr;
   layoutImage();
   draw();
 }
 
-// вычисляем, как вписать изображение в canvas (letterbox), считаем fit{x,y,w,h}
 function layoutImage() {
   if (!img.naturalWidth || !img.naturalHeight) { fit = {x:0,y:0,w:0,h:0}; return; }
   const cw = canvas.width, ch = canvas.height;
   const ir = img.naturalWidth / img.naturalHeight;
   const cr = cw / ch;
   let w,h;
-  if (ir > cr) { // ограничивает ширина
-    w = cw; h = Math.round(cw / ir);
-  } else { // ограничивает высота
-    h = ch; w = Math.round(ch * ir);
-  }
+  if (ir > cr) { w = cw; h = Math.round(cw / ir); }
+  else { h = ch; w = Math.round(ch * ir); }
   const x = Math.round((cw - w) / 2);
   const y = Math.round((ch - h) / 2);
   fit = { x, y, w, h };
 }
 
-// рисуем изображение + точки
 function draw() {
+  // фон
   ctx.fillStyle = '#000';
   ctx.fillRect(0,0,canvas.width,canvas.height);
+  // изображение
   if (fit.w>0 && fit.h>0) ctx.drawImage(img, fit.x, fit.y, fit.w, fit.h);
-
-  // линии/точки
+  // полигоны/точки
   ctx.lineWidth = 2 * dpr;
   ctx.strokeStyle = '#00ff88';
   ctx.fillStyle = '#00ff88';
@@ -97,22 +98,15 @@ function draw() {
   }
 }
 
-// перевод из координат клика мыши (client) -> координаты canvas -> координаты изображения
 function clientToCanvasAndImage(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
-  // координаты внутри CSS-пикселей:
   const xCss = clientX - rect.left;
   const yCss = clientY - rect.top;
-  // переведём в пиксели canvas (учёт devicePixelRatio):
   const x = xCss * dpr;
   const y = yCss * dpr;
-
-  // лежит ли клик внутри прямоугольника вписанного изображения?
   const inside = (x >= fit.x && x <= fit.x + fit.w && y >= fit.y && y <= fit.y + fit.h);
-
-  // координаты источника (natural) вычисляем только если внутри:
   let sx = null, sy = null;
-  if (inside) {
+  if (inside && img.naturalWidth) {
     const nx = (x - fit.x) / fit.w; // 0..1
     const ny = (y - fit.y) / fit.h; // 0..1
     sx = nx * img.naturalWidth;
@@ -122,29 +116,42 @@ function clientToCanvasAndImage(clientX, clientY) {
 }
 
 canvas.addEventListener('pointerdown', (e)=>{
-  if (!img.naturalWidth || pointsVis.length>=4) return;
+  if (pointsVis.length>=4) return;
   const { x, y, inside, sx, sy } = clientToCanvasAndImage(e.clientX, e.clientY);
-  if (!inside) return; // клики вне картинки игнорим (по чёрным полям)
+  // не даём ставить точки за пределами изображения (по чёрным полям)
+  if (!inside) { showMsg('Кликайте по изображению (не по чёрным полям)'); return; }
+  hideMsg();
   pointsVis.push({ x, y });
+  // если изображение не загрузилось — перестраховка (не отправляем мусор)
+  if (sx==null || sy==null) { showMsg('Изображение не загружено — точки не сохраняются'); return; }
   pointsSrc.push([ Math.round(sx), Math.round(sy) ]);
   draw();
 });
 
 document.getElementById('reset').addEventListener('click', ()=>{
-  pointsVis.length = 0; pointsSrc.length = 0; draw();
+  pointsVis.length = 0; pointsSrc.length = 0; hideMsg(); draw();
 });
 
 document.getElementById('send').addEventListener('click', ()=>{
-  if (pointsSrc.length !== 4) { tg.showPopup({title:'Нужно 4 точки',message:'Кликните по всем углам документа в порядке ↖ ↗ ↘ ↙'}); return; }
+  if (pointsSrc.length !== 4) {
+    tg.showPopup({title:'Нужно 4 точки',message:'Кликните четыре угла в порядке ↖ ↗ ↘ ↙'});
+    return;
+  }
   tg.sendData(JSON.stringify({ pts: pointsSrc }));
   tg.close();
 });
 
-window.addEventListener('resize', ()=>{ resizeCanvas(); });
+window.addEventListener('resize', resizeCanvas);
 
 // загрузка изображения
-img.onload = ()=>{ layoutImage(); draw(); };
-if (imgURL) img.src = imgURL;
+if (imgURL) {
+  showMsg('Загружаем изображение…');
+  img.onload = ()=>{ hideMsg(); layoutImage(); draw(); };
+  img.onerror = ()=>{ showMsg('Не удалось загрузить превью. Вернитесь и откройте редактор ещё раз.'); draw(); };
+  img.src = imgURL;
+} else {
+  showMsg('Превью не передано. Вернитесь и откройте редактор из бота, чтобы увидеть исходник.');
+}
 resizeCanvas();
 </script>
 </body>
