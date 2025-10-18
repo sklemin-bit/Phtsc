@@ -35,11 +35,10 @@ const tg = window.Telegram.WebApp; tg.expand();
 
 const urlParams = new URLSearchParams(location.search);
 const fileId = urlParams.get("file_id"); // бот передаёт сюда file_id
-
-// Новый код для загрузки изображения с использованием file_id
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 const msg = document.getElementById('msg');
+
 const pointsVis = [];     // точки в координатах canvas
 const pointsSrc = [];     // точки в координатах исходного изображения
 
@@ -48,11 +47,9 @@ img.crossOrigin = "anonymous"; // на случай CORS
 let fit = { x:0, y:0, w:0, h:0 };   // прямоугольник вписывания изображения в canvas
 let dpr = window.devicePixelRatio || 1;
 
-// Функция для отображения сообщений
 function showMsg(text){ msg.textContent = text; msg.hidden = false; }
 function hideMsg(){ msg.hidden = true; }
 
-// Функция для изменения размера канваса
 function resizeCanvas() {
   const rect = canvas.parentElement.getBoundingClientRect();
   const cssW = Math.max(320, Math.floor(rect.width));
@@ -66,7 +63,6 @@ function resizeCanvas() {
   draw();
 }
 
-// Функция для расположения изображения
 function layoutImage() {
   if (!img.naturalWidth || !img.naturalHeight) { fit = {x:0,y:0,w:0,h:0}; return; }
   const cw = canvas.width, ch = canvas.height;
@@ -80,7 +76,6 @@ function layoutImage() {
   fit = { x, y, w, h };
 }
 
-// Функция рисования
 function draw() {
   // фон
   ctx.fillStyle = '#000';
@@ -103,7 +98,6 @@ function draw() {
   }
 }
 
-// Загрузка изображения с использованием file_id
 if (fileId) {
   showMsg('Загружаем изображение…');
   fetch(`https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getFile?file_id=${fileId}`)
