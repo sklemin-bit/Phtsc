@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Doc Cropper</title>
+  <title>Doc Cropper Classic</title>
   <style>
     :root { color-scheme: light dark; }
     html, body { margin:0; height:100%; background:#111; color:#eee; font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial; }
@@ -28,15 +28,13 @@
   <div id="stage">
     <canvas id="cv"></canvas>
   </div>
-  <div class="hint">Кликни по четырём углам документа (в любом порядке). Кнопка «Отправить» активируется после 4 точек.</div>
+  <div class="hint">Кликни по четырём углам документа (в любом порядке). Кнопка «Отправить» появится после 4 точек.</div>
 </div>
 
 <script>
 (function(){
   const tg = window.Telegram?.WebApp;
-  if (tg) {
-    try { tg.ready(); tg.expand(); } catch(e){}
-  }
+  if (tg) { try { tg.ready(); tg.expand(); } catch(e){} }
 
   const qs = new URLSearchParams(location.search);
   const rawImg = qs.get('img') || '';
@@ -46,36 +44,25 @@
   const btnReset = document.getElementById('reset');
   const cv = document.getElementById('cv');
   const ctx = cv.getContext('2d', { alpha:false });
-
   const stage = document.getElementById('stage');
 
   function proxify(u) {
     if (!u) return u;
-    // убираем схему и отдаём через weserv для CORS
     return 'https://images.weserv.nl/?url=' + encodeURIComponent(u.replace(/^https?:\/\//,''));
   }
 
-  // состояние
   const img = new Image();
   img.crossOrigin = "anonymous";
-  let points = []; // [{x,y} в координатах canvas]
-  let fitted = { w:0, h:0 }; // фактический размер отрисовки в canvas (px)
-
+  let points = [];
   input.value = rawImg || '';
 
-  img.onload = () => {
-    fitAndDraw();
-  };
-  img.onerror = () => {
-    console.error('Image load error', input.value);
-    alert('Не удалось загрузить изображение. Проверь URL (?img=...)');
-  };
+  img.onload = () => { fitAndDraw(); };
+  img.onerror = () => { console.error('Image load error', input.value); alert('Не удалось загрузить изображение.'); };
   if (input.value) img.src = proxify(input.value);
 
   input.addEventListener('change', () => {
     points = [];
-    if (input.value) img.src = proxify(input.value);
-    else { clearCanvas(); }
+    if (input.value) img.src = proxify(input.value); else clearCanvas();
     updateButtons();
   });
 
@@ -83,12 +70,10 @@
 
   function clearCanvas() {
     const pad = 10;
-    const w = stage.clientWidth - pad*2;
-    const h = stage.clientHeight - pad*2;
-    cv.width = Math.max(10, w);
-    cv.height = Math.max(10, h);
-    fitted.w = cv.width; fitted.h = cv.height;
-    ctx.fillStyle = '#000'; ctx.fillRect(0,0,cv.width,cv.height);
+    const w = Math.max(10, stage.clientWidth - pad*2);
+    const h = Math.max(10, stage.clientHeight - pad*2);
+    cv.width = w; cv.height = h;
+    ctx.fillStyle = '#000'; ctx.fillRect(0,0,w,h);
   }
 
   function fitAndDraw() {
@@ -100,97 +85,61 @@
     const w = Math.max(10, Math.floor(img.naturalWidth * k));
     const h = Math.max(10, Math.floor(img.naturalHeight * k));
     cv.width = w; cv.height = h;
-    fitted.w = w; fitted.h = h;
     draw();
   }
 
   function draw() {
-    // фон
     ctx.fillStyle = '#000'; ctx.fillRect(0,0,cv.width,cv.height);
-    if (img.complete && img.naturalWidth) {
-      ctx.drawImage(img, 0, 0, cv.width, cv.height);
-    }
+    if (img.complete && img.naturalWidth) ctx.drawImage(img, 0, 0, cv.width, cv.height);
 
-    // нарисуем линии и точки
     if (points.length > 0) {
       ctx.lineWidth = 2;
       ctx.strokeStyle = 'rgba(0,212,255,0.9)';
       ctx.fillStyle = '#00d4ff';
-      // линии
       ctx.beginPath();
       ctx.moveTo(points[0].x, points[0].y);
       for (let i=1;i<points.length;i++) ctx.lineTo(points[i].x, points[i].y);
       ctx.stroke();
-      // точки
-      for (const p of points) {
-        ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI*2); ctx.fill();
-      }
+      for (const p of points) { ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI*2); ctx.fill(); }
     }
     updateButtons();
   }
 
   function canvasCoords(evt) {
     const r = cv.getBoundingClientRect();
-    const sx = cv.width / r.width;
-    const sy = cv.height / r.height;
-    const x = (evt.clientX - r.left) * sx;
-    const y = (evt.clientY - r.top)  * sy;
-    return { x, y };
+    const sx = cv.width / r.width, sy = cv.height / r.height;
+    return { x: (evt.clientX - r.left) * sx, y: (evt.clientY - r.top) * sy };
   }
 
   cv.addEventListener('click', (e) => {
     if (points.length >= 4) return;
     const p = canvasCoords(e);
-    points.push({ x: p.x, y: p.y });
+    points.push({ x:p.x, y:p.y });
     draw();
   });
 
-  btnUndo.addEventListener('click', () => {
-    if (points.length > 0) points.pop();
-    draw();
-  });
+  btnUndo.addEventListener('click', () => { if (points.length) points.pop(); draw(); });
+  btnReset.addEventListener('click', () => { points = []; draw(); });
 
-  btnReset.addEventListener('click', () => {
-    points = [];
-    draw();
-  });
-
-  function updateButtons() {
-    btnSend.disabled = !(points.length === 4 && img.naturalWidth && img.naturalHeight);
-  }
+  function updateButtons(){ btnSend.disabled = !(points.length === 4 && img.naturalWidth && img.naturalHeight); }
 
   btnSend.addEventListener('click', () => {
     if (points.length !== 4) return;
     const payload = {
-      // 4 точки в координатах CANVAS
       pts: points.map(p => [Number(p.x.toFixed(2)), Number(p.y.toFixed(2))]),
-
-      // размеры рендера (canvas)
-      canvas_w: cv.width,
-      canvas_h: cv.height,
-      cw: cv.width,
-      ch: cv.height,
-
-      // нативные размеры изображения
-      img_w: img.naturalWidth || img.width || fitted.w,
-      img_h: img.naturalHeight || img.height || fitted.h,
-      iw: img.naturalWidth || img.width || fitted.w,
-      ih: img.naturalHeight || img.height || fitted.h,
-
-      // чуть-чуть метаданных для отладки
-      ver: "editor-1.2",
-      ts: Date.now()
+      canvas_w: cv.width, canvas_h: cv.height, cw: cv.width, ch: cv.height,
+      img_w: img.naturalWidth || img.width, img_h: img.naturalHeight || img.height,
+      iw: img.naturalWidth || img.width, ih: img.naturalHeight || img.height,
+      ver: "classic-1.3", ts: Date.now()
     };
-
     try {
       if (window.Telegram?.WebApp) {
         window.Telegram.WebApp.sendData(JSON.stringify(payload));
-        // Telegram сам закрывает WebApp после sendData, но добавим страховку:
-        window.Telegram.WebApp.close();
+        // небольшая задержка перед закрытием — повышает надёжность доставки
+        setTimeout(() => { try { window.Telegram.WebApp.close(); } catch(e){} }, 150);
       } else {
-        // если открыли в обычном браузере
         console.log("Payload:", payload);
-        alert("Это окно не запущено как Telegram WebApp. Открой через кнопку бота.");
+        alert("Это окно не Telegram WebApp. Открой через кнопку бота.");
       }
     } catch (e) {
       console.error('sendData error', e);
