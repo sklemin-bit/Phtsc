@@ -3,18 +3,18 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Doc Cropper Mini</title>
+  <title>Doc Cropper</title>
   <style>
-    html, body {margin:0; height:100%; background:#111; color:#eee; font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial;}
-    .wrap {display:flex; flex-direction:column; height:100%;}
-    .top {padding:10px; background:#181818; display:flex; gap:10px; align-items:center;}
-    .top input {flex:1; padding:8px; background:#222; color:#eee; border:1px solid #333; border-radius:8px;}
-    .btn {padding:10px 14px; border-radius:10px; border:1px solid #444; background:#2a2a2a; color:#fff; cursor:pointer;}
-    .btn:disabled {opacity:.5; cursor:not-allowed;}
-    #stage {flex:1; display:flex; align-items:center; justify-content:center; background:#000; position:relative;}
-    canvas {max-width:100%; max-height:100%; background:#000;}
-    .hint {padding:8px 10px; font-size:14px; color:#aaa;}
-    .dot {position:absolute; width:10px; height:10px; background:#00d4ff; border-radius:50%; transform:translate(-50%, -50%);}
+    :root { color-scheme: light dark; }
+    html, body { margin:0; height:100%; background:#111; color:#eee; font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    .wrap { display:flex; flex-direction:column; height:100%; }
+    .top { padding:10px; background:#181818; display:flex; gap:8px; align-items:center; }
+    .top input { flex:1; padding:10px; background:#222; color:#eee; border:1px solid #333; border-radius:10px; }
+    .btn { padding:10px 14px; border-radius:10px; border:1px solid #444; background:#2b2b2b; color:#fff; cursor:pointer; }
+    .btn:disabled { opacity:.5; cursor:not-allowed; }
+    #stage { flex:1; display:flex; align-items:center; justify-content:center; background:#000; position:relative; overflow:hidden; }
+    canvas { max-width:100%; max-height:100%; background:#000; image-rendering: crisp-edges; }
+    .hint { padding:8px 10px; font-size:14px; color:#aaa; }
   </style>
 </head>
 <body>
@@ -22,77 +22,132 @@
   <div class="top">
     <input id="imgUrl" placeholder="Ссылка на изображение (?img=... подставится автоматически)"/>
     <button id="send" class="btn" disabled>Отправить</button>
+    <button id="undo" class="btn">Отменить точку</button>
     <button id="reset" class="btn">Сброс</button>
   </div>
   <div id="stage">
     <canvas id="cv"></canvas>
   </div>
-  <div class="hint">Кликни по четырём углам документа по часовой стрелке (или как получится) — отправим любые 4 точки.</div>
+  <div class="hint">Кликни по четырём углам документа (в любом порядке). Кнопка «Отправить» активируется после 4 точек.</div>
 </div>
 
 <script>
 (function(){
   const tg = window.Telegram?.WebApp;
-  if (tg) { tg.ready(); }
+  if (tg) {
+    try { tg.ready(); tg.expand(); } catch(e){}
+  }
 
   const qs = new URLSearchParams(location.search);
-  const raw = qs.get('img') || '';
+  const rawImg = qs.get('img') || '';
   const input = document.getElementById('imgUrl');
   const btnSend = document.getElementById('send');
+  const btnUndo = document.getElementById('undo');
   const btnReset = document.getElementById('reset');
   const cv = document.getElementById('cv');
-  const ctx = cv.getContext('2d');
+  const ctx = cv.getContext('2d', { alpha:false });
+
   const stage = document.getElementById('stage');
 
   function proxify(u) {
     if (!u) return u;
+    // убираем схему и отдаём через weserv для CORS
     return 'https://images.weserv.nl/?url=' + encodeURIComponent(u.replace(/^https?:\/\//,''));
   }
 
-  input.value = raw || '';
+  // состояние
   const img = new Image();
   img.crossOrigin = "anonymous";
-  img.onload = draw;
+  let points = []; // [{x,y} в координатах canvas]
+  let fitted = { w:0, h:0 }; // фактический размер отрисовки в canvas (px)
+
+  input.value = rawImg || '';
+
+  img.onload = () => {
+    fitAndDraw();
+  };
   img.onerror = () => {
     console.error('Image load error', input.value);
-    alert('Не удалось загрузить изображение. Проверь URL.');
+    alert('Не удалось загрузить изображение. Проверь URL (?img=...)');
   };
   if (input.value) img.src = proxify(input.value);
 
-  let points = []; // [{x,y}, ...]
+  input.addEventListener('change', () => {
+    points = [];
+    if (input.value) img.src = proxify(input.value);
+    else { clearCanvas(); }
+    updateButtons();
+  });
 
-  function draw() {
-    // впишем изображение в окно
+  window.addEventListener('resize', fitAndDraw);
+
+  function clearCanvas() {
     const pad = 10;
     const w = stage.clientWidth - pad*2;
     const h = stage.clientHeight - pad*2;
-    const k = Math.min(w / img.width, h / img.height);
-    cv.width = Math.max(10, Math.floor(img.width * k));
-    cv.height = Math.max(10, Math.floor(img.height * k));
-    ctx.clearRect(0,0,cv.width, cv.height);
-    ctx.drawImage(img, 0, 0, cv.width, cv.height);
-
-    // рисуем выбранные точки
-    ctx.fillStyle = '#00d4ff';
-    points.forEach(p => {
-      ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI*2); ctx.fill();
-    });
-
-    btnSend.disabled = points.length !== 4;
-    updateDotsOverlay();
+    cv.width = Math.max(10, w);
+    cv.height = Math.max(10, h);
+    fitted.w = cv.width; fitted.h = cv.height;
+    ctx.fillStyle = '#000'; ctx.fillRect(0,0,cv.width,cv.height);
   }
 
-  function addPoint(px, py) {
-    if (points.length >= 4) return;
-    points.push({x:px, y:py});
+  function fitAndDraw() {
+    if (!img.naturalWidth || !img.naturalHeight) { clearCanvas(); return; }
+    const pad = 10;
+    const maxW = Math.max(10, stage.clientWidth - pad*2);
+    const maxH = Math.max(10, stage.clientHeight - pad*2);
+    const k = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight);
+    const w = Math.max(10, Math.floor(img.naturalWidth * k));
+    const h = Math.max(10, Math.floor(img.naturalHeight * k));
+    cv.width = w; cv.height = h;
+    fitted.w = w; fitted.h = h;
     draw();
   }
 
-  cv.addEventListener('click', (e) => {
+  function draw() {
+    // фон
+    ctx.fillStyle = '#000'; ctx.fillRect(0,0,cv.width,cv.height);
+    if (img.complete && img.naturalWidth) {
+      ctx.drawImage(img, 0, 0, cv.width, cv.height);
+    }
+
+    // нарисуем линии и точки
+    if (points.length > 0) {
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(0,212,255,0.9)';
+      ctx.fillStyle = '#00d4ff';
+      // линии
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i=1;i<points.length;i++) ctx.lineTo(points[i].x, points[i].y);
+      ctx.stroke();
+      // точки
+      for (const p of points) {
+        ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI*2); ctx.fill();
+      }
+    }
+    updateButtons();
+  }
+
+  function canvasCoords(evt) {
     const r = cv.getBoundingClientRect();
-    const x = e.clientX - r.left;
-    const y = e.clientY - r.top;
-    addPoint(x, y);
+    const sx = cv.width / r.width;
+    const sy = cv.height / r.height;
+    const x = (evt.clientX - r.left) * sx;
+    const y = (evt.clientY - r.top)  * sy;
+    return { x, y };
+  }
+
+  cv.addEventListener('click', (e) => {
+    if (points.length >= 4) return;
+    const p = canvasCoords(e);
+    points.push({ x: p.x, y: p.y });
+    draw();
+  });
+
+  btnUndo.addEventListener('click', () => {
+    if (points.length > 0) points.pop();
+    draw();
   });
 
   btnReset.addEventListener('click', () => {
@@ -100,40 +155,48 @@
     draw();
   });
 
+  function updateButtons() {
+    btnSend.disabled = !(points.length === 4 && img.naturalWidth && img.naturalHeight);
+  }
+
   btnSend.addEventListener('click', () => {
     if (points.length !== 4) return;
-    const payload = { pts: points.map(p => [p.x, p.y]) };
+    const payload = {
+      // 4 точки в координатах CANVAS
+      pts: points.map(p => [Number(p.x.toFixed(2)), Number(p.y.toFixed(2))]),
+
+      // размеры рендера (canvas)
+      canvas_w: cv.width,
+      canvas_h: cv.height,
+      cw: cv.width,
+      ch: cv.height,
+
+      // нативные размеры изображения
+      img_w: img.naturalWidth || img.width || fitted.w,
+      img_h: img.naturalHeight || img.height || fitted.h,
+      iw: img.naturalWidth || img.width || fitted.w,
+      ih: img.naturalHeight || img.height || fitted.h,
+
+      // чуть-чуть метаданных для отладки
+      ver: "editor-1.2",
+      ts: Date.now()
+    };
+
     try {
-      tg?.sendData(JSON.stringify(payload));
-      // Telegram закроет WebApp автоматически, но на всякий:
-      tg?.close();
+      if (window.Telegram?.WebApp) {
+        window.Telegram.WebApp.sendData(JSON.stringify(payload));
+        // Telegram сам закрывает WebApp после sendData, но добавим страховку:
+        window.Telegram.WebApp.close();
+      } else {
+        // если открыли в обычном браузере
+        console.log("Payload:", payload);
+        alert("Это окно не запущено как Telegram WebApp. Открой через кнопку бота.");
+      }
     } catch (e) {
       console.error('sendData error', e);
       alert('sendData не сработал: ' + e);
     }
   });
-
-  input.addEventListener('change', () => {
-    points = [];
-    img.src = proxify(input.value);
-  });
-
-  // Визуальные метки точек поверх canvas (необязательно, просто наглядно)
-  function updateDotsOverlay(){
-    [...document.querySelectorAll('.dot')].forEach(n => n.remove());
-    points.forEach(p => {
-      const d = document.createElement('div');
-      d.className = 'dot';
-      const rect = cv.getBoundingClientRect();
-      const sx = rect.left + window.scrollX + p.x;
-      const sy = rect.top + window.scrollY + p.y;
-      d.style.left = sx + 'px';
-      d.style.top  = sy + 'px';
-      document.body.appendChild(d);
-    });
-  }
-
-  window.addEventListener('resize', () => { draw(); });
 })();
 </script>
 </body>
