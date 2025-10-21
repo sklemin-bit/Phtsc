@@ -25,10 +25,8 @@
     <button id="undo" class="btn">Отменить точку</button>
     <button id="reset" class="btn">Сброс</button>
   </div>
-  <div id="stage">
-    <canvas id="cv"></canvas>
-  </div>
-  <div class="hint">Кликни по четырём углам документа (в любом порядке), затем — «Отправить».</div>
+  <div id="stage"><canvas id="cv"></canvas></div>
+  <div class="hint">Кликни по четырём углам документа, затем — «Отправить».</div>
 </div>
 
 <script>
@@ -46,7 +44,6 @@
   const ctx = cv.getContext('2d', { alpha:false });
   const stage = document.getElementById('stage');
 
-  // безопасный прокси для CORS
   function proxify(u) {
     if (!u) return u;
     return 'https://images.weserv.nl/?url=' + encodeURIComponent(u.replace(/^https?:\/\//,''));
@@ -132,19 +129,17 @@
       canvas_w: cv.width, canvas_h: cv.height, cw: cv.width, ch: cv.height,
       img_w: img.naturalWidth || img.width, img_h: img.naturalHeight || img.height,
       iw: img.naturalWidth || img.width, ih: img.naturalHeight || img.height,
-      ver: "classic-rb", ts: Date.now()
+      ver: "classic", ts: Date.now()
     };
     try {
       if (window.Telegram?.WebApp) {
         window.Telegram.WebApp.sendData(JSON.stringify(payload));
         setTimeout(() => { try { window.Telegram.WebApp.close(); } catch(e){} }, 150);
       } else {
-        console.log("Payload:", payload);
-        alert("Открой через кнопку бота в Telegram.");
+        alert("Откройте редактор через кнопку бота в Telegram.");
       }
     } catch (e) {
       console.error('sendData error', e);
-      alert('sendData не сработал: ' + e);
     }
   });
 })();
