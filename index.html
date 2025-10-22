@@ -22,40 +22,45 @@
       flex:0 0 auto;
     }
 
-    /* Превью занимает всё доступное пространство между шапкой и HUD */
+    /* Превью занимает всё пространство между шапкой и HUD */
     #wrap{
       flex:1 1 auto;
       display:flex; align-items:center; justify-content:center;
       overflow:hidden; padding:6px 10px;
       min-height:160px;
     }
-    #stage{ position:relative; /* размеры задаём из JS = размерам img */ }
+    #stage{ position:relative; }
     #img{
       display:block; max-width:95%; max-height:95%;
       width:auto; height:auto; object-fit:contain;
     }
     #canvas{ position:absolute; top:0; left:0; touch-action:none; }
 
-    /* HUD — в потоке (НЕ fixed), по центру, одна строка. Если не влезает — горизонтальный скролл. */
+    /* HUD — в потоке, центр, адаптивная сетка; ничего не вылезает за край на iPhone */
     .hud{
       flex:0 0 auto;
       padding:10px 12px calc(10px + var(--safe));
       background:linear-gradient(180deg, rgba(11,15,20,0) 0%, rgba(11,15,20,.9) 40%, rgba(11,15,20,1) 100%);
-      overflow-x:auto; overflow-y:hidden;
     }
     .hud-inner{
-      width:max-content;               /* ширина = содержимому */
-      margin:0 auto;                   /* центрирование */
-      display:flex; gap:10px;          /* одна строка */
-      align-items:center; justify-content:center;
-      white-space:nowrap;
+      margin:0 auto;
+      width:100%;
+      max-width:720px;                   /* ограничение на больших экранах */
+      display:grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); /* авто-колонки */
+      gap:10px;
+      align-items:center;
+      justify-items:center;
     }
     .btn{
       appearance:none; border:none; border-radius:12px;
-      padding:12px 14px; min-width:130px; text-align:center;
+      padding:12px 14px;
+      width:100%;            /* занимает всю ширину своей ячейки */
+      min-width:0;           /* чтобы не распирало грид на iOS */
+      text-align:center;
       background:#1b2430; color:var(--fg); font-weight:600; font-size:14px;
       box-shadow:0 1px 0 rgba(255,255,255,.05) inset, 0 0 0 1px rgba(255,255,255,.04);
-      cursor:pointer; flex:0 0 auto;
+      cursor:pointer;
     }
     .btn:active{ transform:translateY(1px) }
     .btn.primary{ background:var(--acc); color:#06120c }
@@ -107,7 +112,7 @@
     const st = { natW:0, natH:0, pts:[] };
 
     function layoutToImage(){
-      // делаем stage и canvas ровно размером видимой картинки
+      // stage и canvas ровно размером видимой картинки
       const vw = Math.max(1, img.clientWidth);
       const vh = Math.max(1, img.clientHeight);
       stage.style.width  = vw + "px";
