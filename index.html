@@ -6,36 +6,65 @@
   <title>ScanBot — выбор углов</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    :root { --bg:#0b0f14; --fg:#e7eef7; --acc:#31b57c; --mut:#7b8a9a; --warn:#ff5555; }
-    html,body{height:100%;}
+    :root{
+      /* фиксированные высоты для стабильной разметки */
+      --head-h: 48px;
+      --hud-h: 64px;
+      --bg:#0b0f14; --fg:#e7eef7; --acc:#31b57c; --warn:#ff5555;
+      --safe: env(safe-area-inset-bottom, 0px);
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
     body{
       margin:0; background:var(--bg); color:var(--fg);
       font-family:system-ui,-apple-system,"Segoe UI",Roboto,Inter,Arial,sans-serif;
-      display:flex; flex-direction:column; gap:8px;
+      display:flex; flex-direction:column; min-height:100dvh;
     }
-    header{ padding:10px 12px; font-weight:600; letter-spacing:.2px; opacity:.9 }
-    #wrap{ position:relative; flex:1 1 auto; display:grid; place-items:center; overflow:hidden; }
-    #stage{ position:relative; max-width:100%; max-height:100%; }
-    /* Простое и рабочее правило: оставляем место под HUD */
-    #img{ display:block; max-width:100%; max-height:calc(100vh - 240px); object-fit:contain }
+    header{
+      height:var(--head-h); padding:0 12px;
+      display:flex; align-items:center; font-weight:600; letter-spacing:.2px; opacity:.9;
+      flex:0 0 auto;
+    }
+
+    /* Область превью — её высота = экран - шапка - HUD */
+    #wrap{
+      position:relative;
+      height:calc(100dvh - var(--head-h) - var(--hud-h) - var(--safe));
+      display:flex; align-items:center; justify-content:center;
+      padding:6px 10px; overflow:hidden; flex:1 1 auto;
+    }
+    #stage{ position:relative; width:100%; height:100%; display:flex; align-items:center; justify-content:center; }
+    #img{
+      display:block; max-width:100%; max-height:100%;
+      width:auto; height:auto; object-fit:contain;
+    }
     #canvas{ position:absolute; inset:0; touch-action:none; }
+
+    /* HUD — одна строка, без переноса, при нехватке ширины — горизонтальный скролл */
     .hud{
-      position:fixed; left:0; right:0; bottom:0; padding:16px 12px 22px;
+      position:fixed; left:0; right:0; bottom:0; height:calc(var(--hud-h) + var(--safe));
+      padding:8px 10px calc(8px + var(--safe));
       background:linear-gradient(180deg, rgba(11,15,20,0) 0%, rgba(11,15,20,.9) 40%, rgba(11,15,20,1) 100%);
-      display:flex; gap:10px; align-items:center; justify-content:space-between;
+      display:flex; align-items:center; justify-content:center; gap:10px;
+      flex-wrap:nowrap; overflow-x:auto; overflow-y:hidden; white-space:nowrap;
+      z-index:10;
     }
     .btn{
-      appearance:none; border:none; border-radius:12px; padding:14px 16px;
-      background:#1b2430; color:var(--fg); font-weight:600; cursor:pointer;
+      appearance:none; border:none; border-radius:12px;
+      padding:10px 14px; min-width:120px; text-align:center;
+      background:#1b2430; color:var(--fg); font-weight:600; font-size:14px;
       box-shadow:0 1px 0 rgba(255,255,255,.05) inset, 0 0 0 1px rgba(255,255,255,.04);
+      cursor:pointer; flex:0 0 auto;
     }
-    .btn:active{ transform:translateY(1px); }
-    .btn.primary{ background:var(--acc); color:#06120c; }
-    .btn.warn{ background:var(--warn); color:#120606; }
+    .btn:active{ transform:translateY(1px) }
+    .btn.primary{ background:var(--acc); color:#06120c }
+    .btn.warn{ background:var(--warn); color:#120606 }
+
     #toast{
       position:fixed; top:12px; left:50%; transform:translateX(-50%);
       background:#1b2430; color:var(--fg); padding:8px 12px; border-radius:8px;
       font-size:13px; box-shadow:0 6px 18px rgba(0,0,0,.35); display:none; z-index:1000;
+      max-width:90vw; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
     }
   </style>
 </head>
@@ -50,14 +79,10 @@
     </div>
   </div>
 
-  <div class="hud">
-    <div style="display:flex; gap:10px;">
-      <button class="btn" id="resetBtn" title="Сбросить точки">Сбросить</button>
-      <button class="btn" id="fitBtn" title="Вписать по краям">Авто-рамка</button>
-    </div>
-    <div style="display:flex; gap:10px;">
-      <button class="btn primary" id="sendBtn">Отправить</button>
-    </div>
+  <div class="hud" id="hud">
+    <button class="btn" id="resetBtn" title="Сбросить точки">Сбросить</button>
+    <button class="btn" id="fitBtn" title="Вписать по краям">Авто-рамка</button>
+    <button class="btn primary" id="sendBtn">Отправить</button>
   </div>
 
   <script>
@@ -67,61 +92,15 @@
     const canvas = $("#canvas");
     const ctx = canvas.getContext("2d", { alpha: true });
     const toast = $("#toast");
-
     const TG = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+
     if (TG) {
-      try {
-        TG.setBackgroundColor("#0b0f14");
-        TG.setHeaderColor("#0b0f14");
-        TG.expand();
-        TG.ready();
-        TG.MainButton.hide(); // используем только свою кнопку
-      } catch (e) {}
+      try { TG.setBackgroundColor("#0b0f14"); TG.setHeaderColor("#0b0f14"); TG.expand(); TG.ready(); TG.MainButton.hide(); } catch(e){}
     }
 
-    const showToast = (s, ms=1400) => {
-      toast.textContent = s;
-      toast.style.display = "block";
-      setTimeout(() => { toast.style.display = "none"; }, ms);
-    };
+    const showToast = (s, ms=1400) => { toast.textContent=s; toast.style.display="block"; setTimeout(()=>toast.style.display="none", ms); };
 
-    const qs = new URLSearchParams(location.search);
-    const imgURL = qs.get("img");
-
-    // Состояние
-    const st = {
-      pts: [],  // точки в координатах CANVAS
-      natW: 0, natH: 0
-    };
-
-    function draw() {
-      ctx.clearRect(0,0,canvas.width, canvas.height);
-      if (st.pts.length !== 4) return;
-
-      ctx.save();
-      ctx.fillStyle = "rgba(0,0,0,0.35)";
-      ctx.fillRect(0,0,canvas.width, canvas.height);
-      ctx.globalCompositeOperation = "destination-out";
-      ctx.beginPath();
-      st.pts.forEach((p, i) => { i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) });
-      ctx.closePath(); ctx.fill();
-      ctx.restore();
-
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = "rgba(49,181,124,0.95)";
-      ctx.beginPath();
-      st.pts.forEach((p, i) => { i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) });
-      ctx.closePath(); ctx.stroke();
-
-      for (const p of st.pts) {
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 8, 0, Math.PI*2);
-        ctx.fillStyle = "#31b57c"; ctx.fill();
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 3, 0, Math.PI*2);
-        ctx.fillStyle = "#06120c"; ctx.fill();
-      }
-    }
+    const st = { natW:0, natH:0, pts:[] };
 
     function fitCanvasToImage() {
       const r = img.getBoundingClientRect();
@@ -142,7 +121,6 @@
       ];
       draw();
     }
-
     function resetFrame() {
       const w = canvas.width, h = canvas.height;
       st.pts = [
@@ -154,91 +132,94 @@
       draw();
     }
 
-    // DnD точек
-    let dragIndex = -1;
+    function draw() {
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      if (st.pts.length !== 4) return;
+
+      // затемнение вне многоугольника
+      ctx.save();
+      ctx.fillStyle = "rgba(0,0,0,0.35)";
+      ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.beginPath();
+      st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) });
+      ctx.closePath(); ctx.fill();
+      ctx.restore();
+
+      // рамка
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "rgba(49,181,124,0.95)";
+      ctx.beginPath();
+      st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) });
+      ctx.closePath(); ctx.stroke();
+
+      // маркеры
+      for (const p of st.pts){
+        ctx.beginPath(); ctx.arc(p.x,p.y,8,0,Math.PI*2); ctx.fillStyle="#31b57c"; ctx.fill();
+        ctx.beginPath(); ctx.arc(p.x,p.y,3,0,Math.PI*2); ctx.fillStyle="#06120c"; ctx.fill();
+      }
+    }
+
+    // перетаскивание точек
+    let dragIndex=-1;
     function hit(x,y){
       for (let i=0;i<st.pts.length;i++){
-        const p = st.pts[i]; const dx=p.x-x, dy=p.y-y;
+        const p=st.pts[i], dx=p.x-x, dy=p.y-y;
         if (dx*dx + dy*dy <= 13*13) return i;
       }
       return -1;
     }
-    canvas.addEventListener("pointerdown", (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
+    canvas.addEventListener("pointerdown",(e)=>{
+      const r=canvas.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top;
       dragIndex = hit(x,y);
-      if (dragIndex>=0) {
-        e.preventDefault();
-        canvas.setPointerCapture?.(e.pointerId);
-      }
-    }, { passive:false });
-    canvas.addEventListener("pointermove", (e) => {
+      if (dragIndex>=0){ e.preventDefault(); canvas.setPointerCapture?.(e.pointerId); }
+    },{passive:false});
+    canvas.addEventListener("pointermove",(e)=>{
       if (dragIndex<0) return;
-      const rect = canvas.getBoundingClientRect();
-      let x = e.clientX - rect.left;
-      let y = e.clientY - rect.top;
-      x = Math.max(0, Math.min(canvas.width, x));
-      y = Math.max(0, Math.min(canvas.height, y));
-      st.pts[dragIndex].x = x;
-      st.pts[dragIndex].y = y;
-      draw();
-    }, { passive:true });
-    canvas.addEventListener("pointerup", (e) => {
-      dragIndex = -1;
-      canvas.releasePointerCapture?.(e.pointerId);
-    });
+      const r=canvas.getBoundingClientRect();
+      let x=e.clientX-r.left, y=e.clientY-r.top;
+      x=Math.max(0,Math.min(canvas.width,x)); y=Math.max(0,Math.min(canvas.height,y));
+      st.pts[dragIndex].x=x; st.pts[dragIndex].y=y; draw();
+    },{passive:true});
+    canvas.addEventListener("pointerup",(e)=>{ dragIndex=-1; canvas.releasePointerCapture?.(e.pointerId); });
 
-    $("#resetBtn").addEventListener("click", (e) => { e.preventDefault(); resetFrame(); showToast("Рамка сброшена"); });
-    $("#fitBtn").addEventListener("click", (e) => { e.preventDefault(); setAutoFrame(); showToast("Авто-рамка"); });
-    $("#sendBtn").addEventListener("click", (e) => { e.preventDefault(); doSend(); });
+    // кнопки
+    $("#resetBtn").addEventListener("click",(e)=>{ e.preventDefault(); resetFrame(); });
+    $("#fitBtn").addEventListener("click",(e)=>{ e.preventDefault(); setAutoFrame(); });
+    $("#sendBtn").addEventListener("click",(e)=>{ e.preventDefault(); doSend(); });
 
     function buildPayload(){
-      const pts = st.pts.map(p => [ +(p.x.toFixed(2)), +(p.y.toFixed(2)) ]);
-      return {
-        pts,
-        canvas_w: canvas.width,
-        canvas_h: canvas.height,
-        img_w: st.natW,
-        img_h: st.natH,
-        ts: Date.now()
-      };
+      const pts = st.pts.map(p=>[+(p.x.toFixed(2)), +(p.y.toFixed(2))]);
+      return { pts, canvas_w:canvas.width, canvas_h:canvas.height, img_w:st.natW, img_h:st.natH, ts:Date.now() };
     }
-
     function doSend(){
-      if (st.pts.length !== 4) { showToast("Нужно поставить 4 точки"); return; }
+      if (st.pts.length!==4){ showToast("Нужно поставить 4 точки"); return; }
       const payload = buildPayload();
-
-      try {
-        if (TG && TG.sendData) {
+      try{
+        if (TG && TG.sendData){
           TG.HapticFeedback?.impactOccurred?.("medium");
           TG.sendData(JSON.stringify(payload));
           showToast("Отправлено боту");
-          setTimeout(() => { try { TG.close(); } catch(e){} }, 800);
-        } else {
-          showToast("Открой через кнопку бота в Telegram");
-        }
-      } catch(err){
-        console.error(err);
-        showToast("Ошибка отправки");
-      }
+          setTimeout(()=>{ try{ TG.close(); }catch(e){} }, 800);
+        } else { showToast("Открой через кнопку бота в Telegram"); }
+      }catch(err){ console.error(err); showToast("Ошибка отправки"); }
     }
 
-    img.addEventListener("load", () => {
+    // загрузка и адаптация
+    const qs = new URLSearchParams(location.search);
+    const imgURL = qs.get("img");
+
+    img.addEventListener("load", ()=>{
       st.natW = img.naturalWidth || img.width;
       st.natH = img.naturalHeight || img.height;
       fitCanvasToImage();
       setAutoFrame();
-      draw();
     });
+    img.addEventListener("error", ()=>{ showToast("Не удалось загрузить превью изображения"); });
 
-    window.addEventListener("resize", () => { fitCanvasToImage(); draw(); });
+    window.addEventListener("resize", ()=>{ fitCanvasToImage(); });
 
-    if (imgURL) {
-      img.src = imgURL;
-    } else {
-      showToast("Открой страницу через кнопку в боте");
-    }
+    if (imgURL){ img.src = imgURL; } else { showToast("Открой страницу через кнопку в боте"); }
   })();
   </script>
 </body>
