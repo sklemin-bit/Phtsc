@@ -6,23 +6,49 @@
   <title>ScanBot — выбор углов</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    :root { --bg:#0b0f14; --fg:#e7eef7; --acc:#31b57c; --mut:#7b8a9a; --warn:#ff5555; }
+    :root {
+      --bg:#0b0f14; --fg:#e7eef7; --acc:#31b57c; --mut:#7b8a9a; --warn:#ff5555;
+      --head-h: 48px;   /* будет заменено скриптом */
+      --hud-h:  120px;  /* будет заменено скриптом */
+    }
     html,body{height:100%;}
     body{
       margin:0; background:var(--bg); color:var(--fg);
       font-family:system-ui,-apple-system,"Segoe UI",Roboto,Inter,Arial,sans-serif;
-      display:flex; flex-direction:column; gap:8px;
+      display:flex; flex-direction:column;
     }
-    header{ padding:10px 12px; font-weight:600; letter-spacing:.2px; opacity:.9 }
-    #wrap{ position:relative; flex:1 1 auto; display:grid; place-items:center; overflow:hidden; }
-    #stage{ position:relative; max-width:100%; max-height:100%; }
-    /* Больше свободного места под HUD, чтобы не наезжало */
-    #img{ display:block; max-width:100%; max-height:calc(100vh - 240px); object-fit:contain }
+    header{
+      padding:12px 14px; font-weight:600; letter-spacing:.2px; opacity:.9;
+      min-height: var(--head-h);
+    }
+
+    /* Центрируем сцену и даём ей максимум места: экран минус header и HUD */
+    #wrap{
+      position:relative;
+      height: calc(100dvh - var(--head-h) - var(--hud-h));
+      display:flex; align-items:center; justify-content:center;
+      overflow:hidden;
+      padding: 6px 10px; /* небольшие поля, чтобы не прилипало к краям */
+    }
+    #stage{ position:relative; display:inline-block; }
+    /* Максимально растягиваем превью, но сохраняем пропорции */
+    #img{
+      display:block;
+      height:auto; width:auto;
+      max-width: calc(100vw - 20px);
+      max-height: calc(100% - 6px);
+      object-fit: contain;
+    }
+    /* Канвас идеально поверх видимой части изображения */
     #canvas{ position:absolute; inset:0; touch-action:none; }
+
     .hud{
-      position:fixed; left:0; right:0; bottom:0; padding:16px 12px 22px;
+      position:fixed; left:0; right:0; bottom:0;
+      padding:18px 12px 24px;
       background:linear-gradient(180deg, rgba(11,15,20,0) 0%, rgba(11,15,20,.9) 40%, rgba(11,15,20,1) 100%);
       display:flex; gap:10px; align-items:center; justify-content:space-between;
+      z-index:10;
+      min-height: var(--hud-h);
     }
     .btn{
       appearance:none; border:none; border-radius:12px; padding:14px 16px;
@@ -32,6 +58,7 @@
     .btn:active{ transform:translateY(1px); }
     .btn.primary{ background:var(--acc); color:#06120c; }
     .btn.warn{ background:var(--warn); color:#120606; }
+
     #toast{
       position:fixed; top:12px; left:50%; transform:translateX(-50%);
       background:#1b2430; color:var(--fg); padding:8px 12px; border-radius:8px;
@@ -50,7 +77,7 @@
     </div>
   </div>
 
-  <div class="hud">
+  <div class="hud" id="hud">
     <div style="display:flex; gap:10px;">
       <button class="btn" id="resetBtn" title="Сбросить точки">Сбросить</button>
       <button class="btn" id="fitBtn" title="Вписать по краям">Авто-рамка</button>
@@ -63,10 +90,13 @@
   <script>
   ;(() => {
     const $ = (s) => document.querySelector(s);
+    const root = document.documentElement;
     const img = $("#img");
     const canvas = $("#canvas");
     const ctx = canvas.getContext("2d", { alpha: true });
     const toast = $("#toast");
+    const header = document.querySelector("header");
+    const hud = $("#hud");
 
     const TG = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
     if (TG) {
@@ -75,7 +105,7 @@
         TG.setHeaderColor("#0b0f14");
         TG.expand();
         TG.ready();
-        TG.MainButton.hide(); // используем только свою кнопку
+        TG.MainButton.hide();
       } catch (e) {}
     }
 
@@ -85,16 +115,19 @@
       setTimeout(() => { toast.style.display = "none"; }, ms);
     };
 
+    // Вычисляем реальные высоты хедера и HUD и записываем в CSS-переменные,
+    // чтобы центрирование и масштаб были точными на всех устройствах
+    function measureChrome(){
+      const headH = Math.round(header?.getBoundingClientRect().height || 0);
+      const hudH  = Math.round(hud?.getBoundingClientRect().height || 0);
+      root.style.setProperty("--head-h", headH + "px");
+      root.style.setProperty("--hud-h",  hudH  + "px");
+    }
+
     const qs = new URLSearchParams(location.search);
     const imgURL = qs.get("img");
 
-    // Состояние
-    const st = {
-      scaleX: 1, scaleY: 1,
-      viewW: 0, viewH: 0,
-      natW: 0, natH: 0,
-      pts: [] // точки в координатах CANVAS
-    };
+    const st = { natW:0, natH:0, pts:[] };
 
     function draw() {
       ctx.clearRect(0,0,canvas.width, canvas.height);
@@ -125,17 +158,13 @@
       }
     }
 
+    // Канвас подгоняем под фактический видимый размер изображения
     function fitCanvasToImage() {
       const r = img.getBoundingClientRect();
       const vw = Math.max(1, Math.round(r.width));
       const vh = Math.max(1, Math.round(r.height));
       if (canvas.width !== vw) canvas.width = vw;
       if (canvas.height !== vh) canvas.height = vh;
-      st.viewW = vw; st.viewH = vh;
-      if (st.natW && st.natH) {
-        st.scaleX = st.natW / vw;
-        st.scaleY = st.natH / vh;
-      }
       draw();
     }
 
@@ -149,7 +178,6 @@
       ];
       draw();
     }
-
     function resetFrame() {
       const w = canvas.width, h = canvas.height;
       st.pts = [
@@ -161,7 +189,6 @@
       draw();
     }
 
-    // DnD точек
     let dragIndex = -1;
     function hit(x,y){
       for (let i=0;i<st.pts.length;i++){
@@ -211,11 +238,9 @@
         ts: Date.now()
       };
     }
-
     function doSend(){
       if (st.pts.length !== 4) { showToast("Нужно поставить 4 точки"); return; }
       const payload = buildPayload();
-
       try {
         if (TG && TG.sendData) {
           TG.HapticFeedback?.impactOccurred?.("medium");
@@ -223,7 +248,7 @@
           showToast("Отправлено боту");
           setTimeout(() => { try { TG.close(); } catch(e){} }, 800);
         } else {
-          showToast("Открой через кнопку бота в Telegram");
+          showToast("Открой страницу через кнопку в боте");
         }
       } catch(err){
         console.error(err);
@@ -231,20 +256,29 @@
       }
     }
 
+    // Перераскладка при загрузке и ресайзах
+    function relayout(){
+      measureChrome();
+      // ждём, пока CSS применит новые переменные, затем подгоняем канвас
+      requestAnimationFrame(() => {
+        fitCanvasToImage();
+      });
+    }
+
     img.addEventListener("load", () => {
       st.natW = img.naturalWidth || img.width;
       st.natH = img.naturalHeight || img.height;
-      fitCanvasToImage();
+      relayout();
       setAutoFrame();
-      draw();
     });
-
-    window.addEventListener("resize", () => { fitCanvasToImage(); draw(); });
+    window.addEventListener("resize", relayout);
 
     if (imgURL) {
       img.src = imgURL;
+      relayout();
     } else {
       showToast("Открой страницу через кнопку в боте");
+      relayout();
     }
   })();
   </script>
