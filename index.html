@@ -8,8 +8,8 @@
   <style>
     :root {
       --bg:#0b0f14; --fg:#e7eef7; --acc:#31b57c; --mut:#7b8a9a; --warn:#ff5555;
-      --head-h: 48px;   /* будет заменено скриптом */
-      --hud-h:  120px;  /* будет заменено скриптом */
+      --head-h: 48px;   /* переопределяется скриптом */
+      --hud-h:  120px;  /* переопределяется скриптом */
     }
     html,body{height:100%;}
     body{
@@ -22,16 +22,15 @@
       min-height: var(--head-h);
     }
 
-    /* Центрируем сцену и даём ей максимум места: экран минус header и HUD */
+    /* Центрируем сцену и даём максимум места: экран минус header и HUD */
     #wrap{
       position:relative;
       height: calc(100dvh - var(--head-h) - var(--hud-h));
       display:flex; align-items:center; justify-content:center;
       overflow:hidden;
-      padding: 6px 10px; /* небольшие поля, чтобы не прилипало к краям */
+      padding: 6px 10px;
     }
     #stage{ position:relative; display:inline-block; }
-    /* Максимально растягиваем превью, но сохраняем пропорции */
     #img{
       display:block;
       height:auto; width:auto;
@@ -39,21 +38,23 @@
       max-height: calc(100% - 6px);
       object-fit: contain;
     }
-    /* Канвас идеально поверх видимой части изображения */
     #canvas{ position:absolute; inset:0; touch-action:none; }
 
+    /* HUD: три равные колонки, кнопки по центру — симметрия */
     .hud{
       position:fixed; left:0; right:0; bottom:0;
       padding:18px 12px 24px;
       background:linear-gradient(180deg, rgba(11,15,20,0) 0%, rgba(11,15,20,.9) 40%, rgba(11,15,20,1) 100%);
-      display:flex; gap:10px; align-items:center; justify-content:space-between;
-      z-index:10;
-      min-height: var(--hud-h);
+      display:grid; grid-template-columns: repeat(3, 1fr);
+      justify-items: center; align-items:center; gap:10px;
+      z-index:10; min-height: var(--hud-h);
     }
     .btn{
       appearance:none; border:none; border-radius:12px; padding:14px 16px;
       background:#1b2430; color:var(--fg); font-weight:600; cursor:pointer;
       box-shadow:0 1px 0 rgba(255,255,255,.05) inset, 0 0 0 1px rgba(255,255,255,.04);
+      min-width: 140px; /* одинаковая визуальная ширина */
+      text-align:center;
     }
     .btn:active{ transform:translateY(1px); }
     .btn.primary{ background:var(--acc); color:#06120c; }
@@ -78,13 +79,9 @@
   </div>
 
   <div class="hud" id="hud">
-    <div style="display:flex; gap:10px;">
-      <button class="btn" id="resetBtn" title="Сбросить точки">Сбросить</button>
-      <button class="btn" id="fitBtn" title="Вписать по краям">Авто-рамка</button>
-    </div>
-    <div style="display:flex; gap:10px;">
-      <button class="btn primary" id="sendBtn">Отправить</button>
-    </div>
+    <button class="btn" id="resetBtn" title="Сбросить точки">Сбросить</button>
+    <button class="btn" id="fitBtn" title="Вписать по краям">Авто-рамка</button>
+    <button class="btn primary" id="sendBtn">Отправить</button>
   </div>
 
   <script>
@@ -115,8 +112,7 @@
       setTimeout(() => { toast.style.display = "none"; }, ms);
     };
 
-    // Вычисляем реальные высоты хедера и HUD и записываем в CSS-переменные,
-    // чтобы центрирование и масштаб были точными на всех устройствах
+    // измеряем фактические высоты, чтобы область превью точно центрировалась
     function measureChrome(){
       const headH = Math.round(header?.getBoundingClientRect().height || 0);
       const hudH  = Math.round(hud?.getBoundingClientRect().height || 0);
@@ -158,7 +154,6 @@
       }
     }
 
-    // Канвас подгоняем под фактический видимый размер изображения
     function fitCanvasToImage() {
       const r = img.getBoundingClientRect();
       const vw = Math.max(1, Math.round(r.width));
@@ -223,8 +218,8 @@
       canvas.releasePointerCapture?.(e.pointerId);
     });
 
-    $("#resetBtn").addEventListener("click", (e) => { e.preventDefault(); resetFrame(); showToast("Рамка сброшена"); });
-    $("#fitBtn").addEventListener("click", (e) => { e.preventDefault(); setAutoFrame(); showToast("Авто-рамка"); });
+    $("#resetBtn").addEventListener("click", (e) => { e.preventDefault(); resetFrame(); });
+    $("#fitBtn").addEventListener("click", (e) => { e.preventDefault(); setAutoFrame(); });
     $("#sendBtn").addEventListener("click", (e) => { e.preventDefault(); doSend(); });
 
     function buildPayload(){
@@ -256,13 +251,9 @@
       }
     }
 
-    // Перераскладка при загрузке и ресайзах
     function relayout(){
       measureChrome();
-      // ждём, пока CSS применит новые переменные, затем подгоняем канвас
-      requestAnimationFrame(() => {
-        fitCanvasToImage();
-      });
+      requestAnimationFrame(fitCanvasToImage);
     }
 
     img.addEventListener("load", () => {
@@ -273,6 +264,8 @@
     });
     window.addEventListener("resize", relayout);
 
+    const qs = new URLSearchParams(location.search);
+    const imgURL = qs.get("img");
     if (imgURL) {
       img.src = imgURL;
       relayout();
