@@ -16,22 +16,22 @@
     header{ padding:10px 12px; font-weight:600; letter-spacing:.2px; opacity:.9 }
     #wrap{ position:relative; flex:1 1 auto; display:grid; place-items:center; overflow:hidden; }
     #stage{ position:relative; max-width:100%; max-height:100%; }
-    #img{ display:block; max-width:100%; max-height:calc(100vh - 160px); object-fit:contain }
+    /* Больше свободного места под HUD, чтобы не наезжало */
+    #img{ display:block; max-width:100%; max-height:calc(100vh - 240px); object-fit:contain }
     #canvas{ position:absolute; inset:0; touch-action:none; }
     .hud{
-      position:fixed; left:0; right:0; bottom:0; padding:10px 12px 16px;
+      position:fixed; left:0; right:0; bottom:0; padding:16px 12px 22px;
       background:linear-gradient(180deg, rgba(11,15,20,0) 0%, rgba(11,15,20,.9) 40%, rgba(11,15,20,1) 100%);
-      display:flex; gap:8px; align-items:center; justify-content:space-between;
+      display:flex; gap:10px; align-items:center; justify-content:space-between;
     }
     .btn{
-      appearance:none; border:none; border-radius:10px; padding:12px 14px;
+      appearance:none; border:none; border-radius:12px; padding:14px 16px;
       background:#1b2430; color:var(--fg); font-weight:600; cursor:pointer;
       box-shadow:0 1px 0 rgba(255,255,255,.05) inset, 0 0 0 1px rgba(255,255,255,.04);
     }
     .btn:active{ transform:translateY(1px); }
     .btn.primary{ background:var(--acc); color:#06120c; }
     .btn.warn{ background:var(--warn); color:#120606; }
-    .meta{ font-size:12px; color:var(--mut); padding:0 12px 6px; }
     #toast{
       position:fixed; top:12px; left:50%; transform:translateX(-50%);
       background:#1b2430; color:var(--fg); padding:8px 12px; border-radius:8px;
@@ -43,8 +43,6 @@
   <div id="toast"></div>
   <header>Выдели углы документа</header>
 
-  <div class="meta" id="meta">Загрузка изображения…</div>
-
   <div id="wrap">
     <div id="stage">
       <img id="img" alt="preview" crossorigin="anonymous" referrerpolicy="no-referrer"/>
@@ -53,12 +51,11 @@
   </div>
 
   <div class="hud">
-    <div style="display:flex; gap:8px;">
+    <div style="display:flex; gap:10px;">
       <button class="btn" id="resetBtn" title="Сбросить точки">Сбросить</button>
       <button class="btn" id="fitBtn" title="Вписать по краям">Авто-рамка</button>
     </div>
-    <div style="display:flex; gap:8px;">
-      <button class="btn" id="copyBtn" title="Скопировать JSON (отладка)">JSON</button>
+    <div style="display:flex; gap:10px;">
       <button class="btn primary" id="sendBtn">Отправить</button>
     </div>
   </div>
@@ -70,7 +67,6 @@
     const canvas = $("#canvas");
     const ctx = canvas.getContext("2d", { alpha: true });
     const toast = $("#toast");
-    const meta = $("#meta");
 
     const TG = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
     if (TG) {
@@ -79,14 +75,11 @@
         TG.setHeaderColor("#0b0f14");
         TG.expand();
         TG.ready();
-        // Включаем системную кнопку Telegram
-        TG.MainButton.setText("Отправить");
-        TG.MainButton.show();
-        TG.onEvent("mainButtonClicked", () => doSend());
+        // используем только свою кнопку — системную скрываем
+        TG.MainButton.hide();
       } catch (e) {}
     }
 
-    // --- utils ---
     const showToast = (s, ms=1400) => {
       toast.textContent = s;
       toast.style.display = "block";
@@ -95,9 +88,6 @@
 
     const qs = new URLSearchParams(location.search);
     const imgURL = qs.get("img");
-    if (!imgURL) {
-      meta.textContent = "Нет параметра img в URL. Открой через кнопку бота «Открыть редактор точек».";
-    }
 
     // Состояние
     const st = {
@@ -107,7 +97,6 @@
       pts: [] // точки в координатах CANVAS
     };
 
-    // Рисование
     function draw() {
       ctx.clearRect(0,0,canvas.width, canvas.height);
       if (st.pts.length !== 4) return;
@@ -208,16 +197,8 @@
       canvas.releasePointerCapture?.(e.pointerId);
     });
 
-    // Кнопки
     $("#resetBtn").addEventListener("click", (e) => { e.preventDefault(); resetFrame(); showToast("Рамка сброшена"); });
     $("#fitBtn").addEventListener("click", (e) => { e.preventDefault(); setAutoFrame(); showToast("Авто-рамка"); });
-    $("#copyBtn").addEventListener("click", (e) => {
-      e.preventDefault();
-      const payload = buildPayload();
-      navigator.clipboard?.writeText(JSON.stringify(payload))
-        .then(()=>showToast("JSON скопирован"))
-        .catch(()=>showToast("Не удалось скопировать"));
-    });
     $("#sendBtn").addEventListener("click", (e) => { e.preventDefault(); doSend(); });
 
     function buildPayload(){
@@ -241,7 +222,6 @@
           TG.HapticFeedback?.impactOccurred?.("medium");
           TG.sendData(JSON.stringify(payload));
           showToast("Отправлено боту");
-          // даём клиенту время сформировать update
           setTimeout(() => { try { TG.close(); } catch(e){} }, 800);
         } else {
           showToast("Открой через кнопку бота в Telegram");
@@ -252,11 +232,9 @@
       }
     }
 
-    // Загрузка изображения
     img.addEventListener("load", () => {
       st.natW = img.naturalWidth || img.width;
       st.natH = img.naturalHeight || img.height;
-      meta.textContent = `Изображение: ${st.natW}×${st.natH}`;
       fitCanvasToImage();
       setAutoFrame();
       draw();
@@ -265,10 +243,12 @@
     window.addEventListener("resize", () => { fitCanvasToImage(); draw(); });
 
     if (imgURL) {
-      img.src = imgURL; // CORS уже включён через атрибуты
+      img.src = imgURL;
+    } else {
+      // нет параметра img — подскажем пользователю
+      showToast("Открой страницу через кнопку в боте");
     }
   })();
   </script>
 </body>
 </html>
-
