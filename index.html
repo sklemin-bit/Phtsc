@@ -41,7 +41,7 @@
 </head>
 <body>
   <div id="toast"></div>
-  <header>Выдели углы документа</header>
+  <header>Выдели края документа</header>
 
   <div id="wrap">
     <div id="stage">
@@ -75,8 +75,7 @@
         TG.setHeaderColor("#0b0f14");
         TG.expand();
         TG.ready();
-        // используем только свою кнопку — системную скрываем
-        TG.MainButton.hide();
+        TG.MainButton.hide(); // используем только свою кнопку
       } catch (e) {}
     }
 
@@ -245,7 +244,6 @@
     if (imgURL) {
       img.src = imgURL;
     } else {
-      // нет параметра img — подскажем пользователю
       showToast("Открой страницу через кнопку в боте");
     }
   })();
