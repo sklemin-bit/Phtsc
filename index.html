@@ -6,11 +6,13 @@
   <title>ScanBot — выбор углов</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    :root {
-      --bg:#0b0f14; --fg:#e7eef7; --acc:#31b57c; --mut:#7b8a9a; --warn:#ff5555;
-      --head-h: 48px;   /* переопределяется скриптом */
-      --hud-h:  120px;  /* переопределяется скриптом */
+    :root{
+      --bg:#0b0f14; --fg:#e7eef7; --acc:#31b57c; --warn:#ff5555;
+      --head-h:48px; /* переопределяется скриптом */
+      --hud-h:96px;  /* переопределяется скриптом */
+      --safe: env(safe-area-inset-bottom, 0px);
     }
+    *{box-sizing:border-box;}
     html,body{height:100%;}
     body{
       margin:0; background:var(--bg); color:var(--fg);
@@ -18,43 +20,41 @@
       display:flex; flex-direction:column;
     }
     header{
-      padding:12px 14px; font-weight:600; letter-spacing:.2px; opacity:.9;
-      min-height: var(--head-h);
+      padding:10px 12px; font-weight:600; letter-spacing:.2px; opacity:.9;
+      min-height:var(--head-h); display:flex; align-items:center;
     }
 
-    /* Центрируем сцену и даём максимум места: экран минус header и HUD */
+    /* Контейнер превью: точная высота выставляется из JS */
     #wrap{
-      position:relative;
-      height: calc(100dvh - var(--head-h) - var(--hud-h));
+      position:relative; height: calc(100dvh - var(--head-h) - var(--hud-h));
       display:flex; align-items:center; justify-content:center;
-      overflow:hidden;
-      padding: 6px 10px;
+      overflow:hidden; padding:6px 10px;
     }
     #stage{ position:relative; display:inline-block; }
     #img{
-      display:block;
-      height:auto; width:auto;
-      max-width: calc(100vw - 20px);
-      max-height: calc(100% - 6px);
-      object-fit: contain;
+      display:block; max-width:100%; max-height:100%;
+      width:auto; height:auto; object-fit:contain;
     }
     #canvas{ position:absolute; inset:0; touch-action:none; }
 
-    /* HUD: три равные колонки, кнопки по центру — симметрия */
+    /* HUD: адаптивная сетка, кнопки центрированы; на узких экранах может стать в 2 строки */
     .hud{
       position:fixed; left:0; right:0; bottom:0;
-      padding:18px 12px 24px;
+      padding:10px 12px calc(10px + var(--safe));
       background:linear-gradient(180deg, rgba(11,15,20,0) 0%, rgba(11,15,20,.9) 40%, rgba(11,15,20,1) 100%);
-      display:grid; grid-template-columns: repeat(3, 1fr);
-      justify-items: center; align-items:center; gap:10px;
-      z-index:10; min-height: var(--hud-h);
+      display:grid; gap:10px; justify-items:center; align-items:center;
+      grid-template-columns: repeat(3, minmax(120px, 1fr));
+      z-index:10; min-height:var(--hud-h);
+    }
+    @media (max-width: 380px){
+      .hud{ grid-template-columns: repeat(2, minmax(120px, 1fr)); }
     }
     .btn{
-      appearance:none; border:none; border-radius:12px; padding:14px 16px;
-      background:#1b2430; color:var(--fg); font-weight:600; cursor:pointer;
+      appearance:none; border:none; border-radius:12px;
+      padding:12px 14px; min-width:140px; text-align:center;
+      background:#1b2430; color:var(--fg); font-weight:600; font-size:14px;
       box-shadow:0 1px 0 rgba(255,255,255,.05) inset, 0 0 0 1px rgba(255,255,255,.04);
-      min-width: 140px; /* одинаковая визуальная ширина */
-      text-align:center;
+      cursor:pointer;
     }
     .btn:active{ transform:translateY(1px); }
     .btn.primary{ background:var(--acc); color:#06120c; }
@@ -87,83 +87,46 @@
   <script>
   ;(() => {
     const $ = (s) => document.querySelector(s);
-    const root = document.documentElement;
-    const img = $("#img");
-    const canvas = $("#canvas");
-    const ctx = canvas.getContext("2d", { alpha: true });
-    const toast = $("#toast");
+    const root   = document.documentElement;
     const header = document.querySelector("header");
-    const hud = $("#hud");
+    const hud    = $("#hud");
+    const wrap   = $("#wrap");
+    const img    = $("#img");
+    const canvas = $("#canvas");
+    const ctx    = canvas.getContext("2d", { alpha: true });
+    const toast  = $("#toast");
 
     const TG = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
     if (TG) {
-      try {
-        TG.setBackgroundColor("#0b0f14");
-        TG.setHeaderColor("#0b0f14");
-        TG.expand();
-        TG.ready();
-        TG.MainButton.hide();
-      } catch (e) {}
+      try { TG.setBackgroundColor("#0b0f14"); TG.setHeaderColor("#0b0f14"); TG.expand(); TG.ready(); TG.MainButton.hide(); } catch(e){}
     }
 
-    const showToast = (s, ms=1400) => {
-      toast.textContent = s;
-      toast.style.display = "block";
-      setTimeout(() => { toast.style.display = "none"; }, ms);
-    };
+    const showToast = (s, ms=1400) => { toast.textContent=s; toast.style.display="block"; setTimeout(()=>toast.style.display="none", ms); };
 
-    // измеряем фактические высоты, чтобы область превью точно центрировалась
+    const st = { natW:0, natH:0, pts:[] };
+
     function measureChrome(){
       const headH = Math.round(header?.getBoundingClientRect().height || 0);
       const hudH  = Math.round(hud?.getBoundingClientRect().height || 0);
       root.style.setProperty("--head-h", headH + "px");
       root.style.setProperty("--hud-h",  hudH  + "px");
+      // Выставим wrap высоту точно в пикселях, чтобы избежать перепадов из-за dvh
+      const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+      const wrapH = Math.max(140, Math.round(vh - headH - hudH));
+      wrap.style.height = wrapH + "px";
     }
 
-    const qs = new URLSearchParams(location.search);
-    const imgURL = qs.get("img");
-
-    const st = { natW:0, natH:0, pts:[] };
-
-    function draw() {
-      ctx.clearRect(0,0,canvas.width, canvas.height);
-      if (st.pts.length !== 4) return;
-
-      ctx.save();
-      ctx.fillStyle = "rgba(0,0,0,0.35)";
-      ctx.fillRect(0,0,canvas.width, canvas.height);
-      ctx.globalCompositeOperation = "destination-out";
-      ctx.beginPath();
-      st.pts.forEach((p, i) => { i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) });
-      ctx.closePath(); ctx.fill();
-      ctx.restore();
-
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = "rgba(49,181,124,0.95)";
-      ctx.beginPath();
-      st.pts.forEach((p, i) => { i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) });
-      ctx.closePath(); ctx.stroke();
-
-      for (const p of st.pts) {
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 8, 0, Math.PI*2);
-        ctx.fillStyle = "#31b57c"; ctx.fill();
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 3, 0, Math.PI*2);
-        ctx.fillStyle = "#06120c"; ctx.fill();
-      }
-    }
-
-    function fitCanvasToImage() {
+    function fitCanvasToImage(){
+      // Канвас совпадает по размеру с видимой частью изображения
       const r = img.getBoundingClientRect();
       const vw = Math.max(1, Math.round(r.width));
       const vh = Math.max(1, Math.round(r.height));
-      if (canvas.width !== vw) canvas.width = vw;
+      if (canvas.width  !== vw) canvas.width  = vw;
       if (canvas.height !== vh) canvas.height = vh;
       draw();
     }
 
-    function setAutoFrame() {
+    function setAutoFrame(){
       const w = canvas.width, h = canvas.height;
       st.pts = [
         {x: 0.08*w, y: 0.08*h},
@@ -173,7 +136,7 @@
       ];
       draw();
     }
-    function resetFrame() {
+    function resetFrame(){
       const w = canvas.width, h = canvas.height;
       st.pts = [
         {x: 0.05*w, y: 0.05*h},
@@ -184,95 +147,102 @@
       draw();
     }
 
-    let dragIndex = -1;
+    function draw(){
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      if (st.pts.length !== 4) return;
+
+      ctx.save();
+      ctx.fillStyle = "rgba(0,0,0,0.35)";
+      ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.beginPath();
+      st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) });
+      ctx.closePath(); ctx.fill();
+      ctx.restore();
+
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "rgba(49,181,124,0.95)";
+      ctx.beginPath();
+      st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) });
+      ctx.closePath(); ctx.stroke();
+
+      for (const p of st.pts){
+        ctx.beginPath(); ctx.arc(p.x,p.y,8,0,Math.PI*2); ctx.fillStyle="#31b57c"; ctx.fill();
+        ctx.beginPath(); ctx.arc(p.x,p.y,3,0,Math.PI*2); ctx.fillStyle="#06120c"; ctx.fill();
+      }
+    }
+
+    // DnD
+    let dragIndex=-1;
     function hit(x,y){
       for (let i=0;i<st.pts.length;i++){
-        const p = st.pts[i]; const dx=p.x-x, dy=p.y-y;
+        const p=st.pts[i], dx=p.x-x, dy=p.y-y;
         if (dx*dx + dy*dy <= 13*13) return i;
       }
       return -1;
     }
-    canvas.addEventListener("pointerdown", (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
+    canvas.addEventListener("pointerdown", (e)=>{
+      const rect = canvas.getBoundingClientRect(), x=e.clientX-rect.left, y=e.clientY-rect.top;
       dragIndex = hit(x,y);
-      if (dragIndex>=0) {
-        e.preventDefault();
-        canvas.setPointerCapture?.(e.pointerId);
-      }
-    }, { passive:false });
-    canvas.addEventListener("pointermove", (e) => {
+      if (dragIndex>=0){ e.preventDefault(); canvas.setPointerCapture?.(e.pointerId); }
+    }, {passive:false});
+    canvas.addEventListener("pointermove", (e)=>{
       if (dragIndex<0) return;
       const rect = canvas.getBoundingClientRect();
-      let x = e.clientX - rect.left;
-      let y = e.clientY - rect.top;
-      x = Math.max(0, Math.min(canvas.width, x));
-      y = Math.max(0, Math.min(canvas.height, y));
-      st.pts[dragIndex].x = x;
-      st.pts[dragIndex].y = y;
-      draw();
-    }, { passive:true });
-    canvas.addEventListener("pointerup", (e) => {
-      dragIndex = -1;
-      canvas.releasePointerCapture?.(e.pointerId);
-    });
+      let x=e.clientX-rect.left, y=e.clientY-rect.top;
+      x=Math.max(0,Math.min(canvas.width,x)); y=Math.max(0,Math.min(canvas.height,y));
+      st.pts[dragIndex].x=x; st.pts[dragIndex].y=y; draw();
+    }, {passive:true});
+    canvas.addEventListener("pointerup", (e)=>{ dragIndex=-1; canvas.releasePointerCapture?.(e.pointerId); });
 
-    $("#resetBtn").addEventListener("click", (e) => { e.preventDefault(); resetFrame(); });
-    $("#fitBtn").addEventListener("click", (e) => { e.preventDefault(); setAutoFrame(); });
-    $("#sendBtn").addEventListener("click", (e) => { e.preventDefault(); doSend(); });
+    // Кнопки
+    $("#resetBtn").addEventListener("click", (e)=>{ e.preventDefault(); resetFrame(); });
+    $("#fitBtn").addEventListener("click", (e)=>{ e.preventDefault(); setAutoFrame(); });
+    $("#sendBtn").addEventListener("click", (e)=>{ e.preventDefault(); doSend(); });
 
     function buildPayload(){
-      const pts = st.pts.map(p => [ +(p.x.toFixed(2)), +(p.y.toFixed(2)) ]);
-      return {
-        pts,
-        canvas_w: canvas.width,
-        canvas_h: canvas.height,
-        img_w: st.natW,
-        img_h: st.natH,
-        ts: Date.now()
-      };
+      const pts = st.pts.map(p=>[+(p.x.toFixed(2)), +(p.y.toFixed(2))]);
+      return { pts, canvas_w:canvas.width, canvas_h:canvas.height, img_w:st.natW, img_h:st.natH, ts:Date.now() };
     }
     function doSend(){
-      if (st.pts.length !== 4) { showToast("Нужно поставить 4 точки"); return; }
+      if (st.pts.length!==4){ showToast("Нужно поставить 4 точки"); return; }
       const payload = buildPayload();
-      try {
-        if (TG && TG.sendData) {
+      try{
+        if (TG && TG.sendData){
           TG.HapticFeedback?.impactOccurred?.("medium");
           TG.sendData(JSON.stringify(payload));
           showToast("Отправлено боту");
-          setTimeout(() => { try { TG.close(); } catch(e){} }, 800);
-        } else {
-          showToast("Открой страницу через кнопку в боте");
-        }
-      } catch(err){
-        console.error(err);
-        showToast("Ошибка отправки");
-      }
+          setTimeout(()=>{ try{ TG.close(); }catch(e){} }, 800);
+        } else { showToast("Открой через кнопку бота в Telegram"); }
+      }catch(err){ console.error(err); showToast("Ошибка отправки"); }
     }
 
     function relayout(){
       measureChrome();
-      requestAnimationFrame(fitCanvasToImage);
+      // после пересчёта хрома — дождёмся, пока wrap применит высоту
+      requestAnimationFrame(()=>{
+        fitCanvasToImage();
+      });
     }
 
-    img.addEventListener("load", () => {
+    // Реагируем на любые изменения вьюпорта/ориентации/фокуса
+    window.addEventListener("resize", relayout);
+    window.visualViewport && window.visualViewport.addEventListener("resize", relayout);
+    window.addEventListener("orientationchange", relayout);
+    document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) relayout(); });
+
+    // Загрузка изображения
+    const qs = new URLSearchParams(location.search);
+    const imgURL = qs.get("img");
+    img.addEventListener("load", ()=>{
       st.natW = img.naturalWidth || img.width;
       st.natH = img.naturalHeight || img.height;
       relayout();
       setAutoFrame();
     });
-    window.addEventListener("resize", relayout);
 
-    const qs = new URLSearchParams(location.search);
-    const imgURL = qs.get("img");
-    if (imgURL) {
-      img.src = imgURL;
-      relayout();
-    } else {
-      showToast("Открой страницу через кнопку в боте");
-      relayout();
-    }
+    if (imgURL){ img.src = imgURL; relayout(); }
+    else { showToast("Открой страницу через кнопку в боте"); relayout(); }
   })();
   </script>
 </body>
