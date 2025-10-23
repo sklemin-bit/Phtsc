@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"/>
+  <!-- CSP: явно разрешаем любые источники для <img>, blob:, data: -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' https: data: blob:; img-src * data: blob: http: https:; connect-src * data: blob: https: http:; style-src 'self' 'unsafe-inline' https:; script-src 'self' https://telegram.org 'unsafe-inline' 'unsafe-eval';">
   <title>ScanBot — выбор углов</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    :root{
-      --bg:#0b0f14; --fg:#e7eef7; --acc:#31b57c; --warn:#ff5555;
-      --safe: env(safe-area-inset-bottom, 0px);
-    }
+    :root{ --bg:#0b0f14; --fg:#e7eef7; --acc:#31b57c; --warn:#ff5555; --safe: env(safe-area-inset-bottom, 0px); }
     *{box-sizing:border-box}
     html,body{height:100%}
     body{
@@ -17,25 +17,21 @@
       font-family:system-ui,-apple-system,"Segoe UI",Roboto,Inter,Arial,sans-serif;
       display:flex; flex-direction:column; min-height:100dvh;
     }
-    header{
-      padding:10px 12px; font-weight:600; letter-spacing:.2px; opacity:.9;
-      flex:0 0 auto;
-    }
+    header{ padding:10px 12px; font-weight:600; letter-spacing:.2px; opacity:.9; flex:0 0 auto; }
 
     /* Превью между шапкой и HUD */
     #wrap{
-      flex:1 1 auto;
-      display:flex; align-items:center; justify-content:center;
+      flex:1 1 auto; display:flex; align-items:center; justify-content:center;
       overflow:hidden; padding:6px 10px; min-height:160px;
     }
     #stage{ position:relative; }
     #img{
-      display:block; max-width:95%; max-height:95%;   /* -5% */
+      display:block; max-width:95%; max-height:95%; /* -5% как просили */
       width:auto; height:auto; object-fit:contain;
     }
     #canvas{ position:absolute; top:0; left:0; touch-action:none; }
 
-    /* HUD — в потоке, адаптивная сетка (на iPhone ничего не вылезает) */
+    /* HUD — в потоке, адаптивная сетка */
     .hud{
       flex:0 0 auto;
       padding:10px 12px calc(10px + var(--safe));
@@ -71,7 +67,7 @@
 
   <div id="wrap">
     <div id="stage">
-      <!-- без crossorigin/referrerpolicy — iOS WebView может блокировать -->
+      <!-- без crossorigin/referrerpolicy — iOS WKWebView может блокировать -->
       <img id="img" alt="preview"/>
       <canvas id="canvas"></canvas>
     </div>
@@ -88,81 +84,72 @@
   <script>
   ;(() => {
     const $ = (s) => document.querySelector(s);
-    const img     = $("#img");
-    const stage   = $("#stage");
-    const canvas  = $("#canvas");
-    const ctx     = canvas.getContext("2d", { alpha: true });
-    const toast   = $("#toast");
+    const img = $("#img"), stage = $("#stage"), canvas = $("#canvas");
+    const ctx = canvas.getContext("2d", { alpha: true });
+    const toast = $("#toast");
 
-    const TG = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
-    if (TG) { try { TG.setBackgroundColor("#0b0f14"); TG.setHeaderColor("#0b0f14"); TG.expand(); TG.ready(); TG.MainButton.hide(); } catch(e){} }
+    const TG = window.Telegram?.WebApp;
+    try { TG?.setBackgroundColor("#0b0f14"); TG?.setHeaderColor("#0b0f14"); TG?.expand(); TG?.ready(); TG?.MainButton?.hide(); } catch(e){}
 
     const showToast = (s, ms=1400) => { toast.textContent=s; toast.style.display="block"; setTimeout(()=>toast.style.display="none", ms); };
 
     const st = { natW:0, natH:0, pts:[] };
 
-    /* ----------------- Надёжный разбор URL картинки ----------------- */
+    /* ------------ ПАРСИНГ URL КАРТИНКИ (query + hash) ------------ */
     function getParamFrom(str, key){
       const re = new RegExp('(?:[?&#])' + key + '=([^#&]+)');
-      const m = re.exec(str);
-      return m ? decodeURIComponent(m[1]) : null;
+      const m = re.exec(str); return m ? decodeURIComponent(m[1]) : null;
     }
-    function getImgParamRobust(){
-      // 1) из query
-      let u = getParamFrom(location.search, 'img');
-      // 2) если нет — из hash
-      if (!u) u = getParamFrom(location.hash, 'img');
-      // 3) если всё ещё нет — вырезаем вручную после 'img=' до конца
-      if (!u){
-        const href = String(location.href);
-        const i = href.indexOf('img=');
-        if (i >= 0) u = decodeURIComponent(href.slice(i+4));
-      }
-      return u || '';
+    function getImgParam(){
+      return getParamFrom(location.search,'img')
+          || getParamFrom(location.hash,'img')
+          || (() => { const href=String(location.href); const i=href.indexOf('img='); return i>=0 ? decodeURIComponent(href.slice(i+4)) : ''; })();
     }
 
-    /* ----------------- Прокси и даунскейл для iOS ----------------- */
-    function noScheme(u){
-      try{ const url=new URL(u); return url.host + url.pathname + (url.search||''); }
-      catch{ return u.replace(/^https?:\/\//,''); }
-    }
-    function forceWeserv(u){
-      // гарантированно уменьшаем по длинной стороне до 1600, jpeg q=85
-      const base = 'https://images.weserv.nl/?';
+    /* ------------ ПРОКСИ + ДАУНСКЕЙЛ ДЛЯ iOS ------------ */
+    const isIOS = /iP(ad|hone|od)/i.test(navigator.userAgent);
+    function noScheme(u){ try{ const url=new URL(u); return url.host + url.pathname + (url.search||''); } catch{ return (u||'').replace(/^https?:\/\//,''); } }
+    function weserv(u, w=1400){
       const core = 'url=' + encodeURIComponent(noScheme(u));
-      const opts = '&output=jpg&w=1600&h=1600&fit=inside&q=85';
-      return base + core + opts;
+      return `https://images.weserv.nl/?${core}&output=jpg&w=${w}&h=${w}&fit=inside&q=85&cb=${Date.now()}`;
     }
-    function normalizeUrl(u){
-      if (!u) return '';
-      if (u.includes('images.weserv.nl') || u.includes('wsrv.nl')){
-        // уже через прокси — принудительно добавим параметры качества/размера
-        const url = new URL(u, location.href);
+    function wsrv(u, w=1400){
+      const core = 'url=' + encodeURIComponent(noScheme(u));
+      return `https://wsrv.nl/?${core}&output=jpg&w=${w}&h=${w}&fit=inside&q=85&cb=${Date.now()}`;
+    }
+    function normalizeForPlatform(raw){
+      if (!raw) return '';
+      // если уже прокси — дожмём параметры
+      if (raw.includes('images.weserv.nl') || raw.includes('wsrv.nl')){
+        const url = new URL(raw, location.href);
         url.searchParams.set('output','jpg');
-        url.searchParams.set('w','1600');
-        url.searchParams.set('h','1600');
-        url.searchParams.set('fit','inside');
-        url.searchParams.set('q','85');
+        url.searchParams.set('w','1400'); url.searchParams.set('h','1400'); url.searchParams.set('fit','inside'); url.searchParams.set('q','85');
+        url.searchParams.set('cb', String(Date.now()));
         return url.toString();
       }
-      return u;
+      // на iOS: ТОЛЬКО через прокси (особенно для api.telegram.org/file/bot...)
+      if (isIOS) return weserv(raw, 1400);
+      return raw;
     }
 
-    function loadWithFallback(raw){
-      let triedProxy = false;
+    function loadImageSmart(raw){
+      let triedAltProxy = false;
       let timer;
 
-      const tryDirect = () => {
+      const directOrProxy = normalizeForPlatform(raw);
+
+      const tryLoad = (url) => {
         clearTimeout(timer);
-        const direct = normalizeUrl(raw);
-        img.src = direct;
-        // если за 2500мс не прогрузилось — пробуем прокси
-        timer = setTimeout(()=>{ if (!triedProxy) tryProxy(); }, 2500);
-      };
-      const tryProxy = () => {
-        triedProxy = true;
-        clearTimeout(timer);
-        img.src = forceWeserv(raw);
+        img.src = url;
+        timer = setTimeout(() => {
+          if (!isIOS && !triedAltProxy) { // на не-iOS после таймаута — в прокси
+            triedAltProxy = true;
+            img.src = weserv(raw, 1400);
+          } else if (!triedAltProxy) {
+            triedAltProxy = true;
+            img.src = wsrv(raw, 1400);
+          }
+        }, 2500);
       };
 
       img.onload = () => {
@@ -172,134 +159,106 @@
         layoutToImage();
         setAutoFrame();
       };
+
       img.onerror = () => {
-        if (!triedProxy) tryProxy();
-        else showToast('Не удалось загрузить превью изображения');
+        if (!triedAltProxy) {
+          triedAltProxy = true;
+          img.src = wsrv(raw, 1400);
+        } else {
+          showToast("Не удалось загрузить превью изображения");
+        }
       };
 
-      showToast('Загружаю превью…', 900);
-      tryDirect();
+      showToast("Загружаю превью…", 900);
+      tryLoad(directOrProxy);
     }
 
-    /* ----------------- Разметка и канвас ----------------- */
+    /* ------------ ВЕРСТКА/КАНВАС ------------ */
     function layoutToImage(){
-      // stage и canvas ровно размером видимой картинки
       const vw = Math.max(1, img.clientWidth);
       const vh = Math.max(1, img.clientHeight);
-      stage.style.width  = vw + 'px';
-      stage.style.height = vh + 'px';
+      stage.style.width  = vw + "px";
+      stage.style.height = vh + "px";
       canvas.width  = vw;
       canvas.height = vh;
-      canvas.style.width  = vw + 'px';
-      canvas.style.height = vh + 'px';
+      canvas.style.width  = vw + "px";
+      canvas.style.height = vh + "px";
       draw();
     }
 
-    function setAutoFrame() {
-      const w = canvas.width, h = canvas.height;
-      st.pts = [
-        {x: 0.08*w, y: 0.08*h},
-        {x: 0.92*w, y: 0.08*h},
-        {x: 0.92*w, y: 0.92*h},
-        {x: 0.08*w, y: 0.92*h},
-      ];
-      draw();
+    function setAutoFrame(){
+      const w=canvas.width, h=canvas.height;
+      st.pts=[
+        {x:.08*w,y:.08*h},{x:.92*w,y:.08*h},{x:.92*w,y:.92*h},{x:.08*w,y:.92*h}
+      ]; draw();
     }
-    function resetFrame() {
-      const w = canvas.width, h = canvas.height;
-      st.pts = [
-        {x: 0.05*w, y: 0.05*h},
-        {x: 0.95*w, y: 0.05*h},
-        {x: 0.95*w, y: 0.95*h},
-        {x: 0.05*w, y: 0.95*h},
-      ];
-      draw();
+    function resetFrame(){
+      const w=canvas.width, h=canvas.height;
+      st.pts=[
+        {x:.05*w,y:.05*h},{x:.95*w,y:.05*h},{x:.95*w,y:.95*h},{x:.05*w,y:.95*h}
+      ]; draw();
     }
 
-    function draw() {
-      ctx.clearRect(0,0,canvas.width,canvas.height);
-      if (st.pts.length !== 4) return;
+    function draw(){
+      const w=canvas.width,h=canvas.height;
+      ctx.clearRect(0,0,w,h);
+      if (st.pts.length!==4) return;
 
-      // затемнение вне многоугольника
       ctx.save();
-      ctx.fillStyle = 'rgba(0,0,0,0.35)';
-      ctx.fillRect(0,0,canvas.width,canvas.height);
-      ctx.globalCompositeOperation = 'destination-out';
-      ctx.beginPath();
-      st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y); });
-      ctx.closePath(); ctx.fill();
+      ctx.fillStyle="rgba(0,0,0,.35)";
+      ctx.fillRect(0,0,w,h);
+      ctx.globalCompositeOperation="destination-out";
+      ctx.beginPath(); st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) }); ctx.closePath(); ctx.fill();
       ctx.restore();
 
-      // рамка
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = 'rgba(49,181,124,0.95)';
-      ctx.beginPath();
-      st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y); });
-      ctx.closePath(); ctx.stroke();
+      ctx.lineWidth=2; ctx.strokeStyle="rgba(49,181,124,.95)";
+      ctx.beginPath(); st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) }); ctx.closePath(); ctx.stroke();
 
-      // маркеры
       for (const p of st.pts){
-        ctx.beginPath(); ctx.arc(p.x,p.y,8,0,Math.PI*2); ctx.fillStyle='#31b57c'; ctx.fill();
-        ctx.beginPath(); ctx.arc(p.x,p.y,3,0,Math.PI*2); ctx.fillStyle='#06120c'; ctx.fill();
+        ctx.beginPath(); ctx.arc(p.x,p.y,8,0,Math.PI*2); ctx.fillStyle="#31b57c"; ctx.fill();
+        ctx.beginPath(); ctx.arc(p.x,p.y,3,0,Math.PI*2); ctx.fillStyle="#06120c"; ctx.fill();
       }
     }
 
-    // перетаскивание точек
+    // перетаскивание
     let dragIndex=-1;
-    function hit(x,y){
-      for (let i=0;i<st.pts.length;i++){
-        const p=st.pts[i], dx=p.x-x, dy=p.y-y;
-        if (dx*dx + dy*dy <= 13*13) return i;
-      }
-      return -1;
-    }
-    canvas.addEventListener('pointerdown',(e)=>{
-      const r=canvas.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top;
-      dragIndex = hit(x,y);
-      if (dragIndex>=0){ e.preventDefault(); canvas.setPointerCapture?.(e.pointerId); }
-    },{passive:false});
-    canvas.addEventListener('pointermove',(e)=>{
-      if (dragIndex<0) return;
-      const r=canvas.getBoundingClientRect();
-      let x=e.clientX-r.left, y=e.clientY-r.top;
-      x=Math.max(0,Math.min(canvas.width,x)); y=Math.max(0,Math.min(canvas.height,y));
-      st.pts[dragIndex].x=x; st.pts[dragIndex].y=y; draw();
-    },{passive:true});
-    canvas.addEventListener('pointerup',(e)=>{ dragIndex=-1; canvas.releasePointerCapture?.(e.pointerId); });
+    function hit(x,y){ for(let i=0;i<st.pts.length;i++){ const p=st.pts[i],dx=p.x-x,dy=p.y-y; if(dx*dx+dy*dy<=169) return i; } return -1; }
+    canvas.addEventListener("pointerdown",(e)=>{ const r=canvas.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top; dragIndex=hit(x,y); if(dragIndex>=0){ e.preventDefault(); canvas.setPointerCapture?.(e.pointerId);} },{passive:false});
+    canvas.addEventListener("pointermove",(e)=>{ if(dragIndex<0)return; const r=canvas.getBoundingClientRect(); let x=e.clientX-r.left,y=e.clientY-r.top; x=Math.max(0,Math.min(canvas.width,x)); y=Math.max(0,Math.min(canvas.height,y)); st.pts[dragIndex].x=x; st.pts[dragIndex].y=y; draw(); },{passive:true});
+    canvas.addEventListener("pointerup",(e)=>{ dragIndex=-1; canvas.releasePointerCapture?.(e.pointerId); });
 
     // кнопки
-    $('#resetBtn').addEventListener('click',(e)=>{ e.preventDefault(); resetFrame(); });
-    $('#fitBtn').addEventListener('click',(e)=>{ e.preventDefault(); setAutoFrame(); });
-    $('#sendBtn').addEventListener('click',(e)=>{ e.preventDefault(); doSend(); });
+    $("#resetBtn").addEventListener("click",(e)=>{ e.preventDefault(); resetFrame(); });
+    $("#fitBtn").addEventListener("click",(e)=>{ e.preventDefault(); setAutoFrame(); });
+    $("#sendBtn").addEventListener("click",(e)=>{ e.preventDefault(); doSend(); });
 
     function buildPayload(){
       const pts = st.pts.map(p=>[+(p.x.toFixed(2)), +(p.y.toFixed(2))]);
       return { pts, canvas_w:canvas.width, canvas_h:canvas.height, img_w:st.natW, img_h:st.natH, ts:Date.now() };
     }
     function doSend(){
-      if (st.pts.length!==4){ showToast('Нужно поставить 4 точки'); return; }
+      if (st.pts.length!==4){ showToast("Нужно поставить 4 точки"); return; }
       const payload = buildPayload();
       try{
-        if (TG && TG.sendData){
-          TG.HapticFeedback?.impactOccurred?.('medium');
+        if (TG?.sendData){
+          TG.HapticFeedback?.impactOccurred?.("medium");
           TG.sendData(JSON.stringify(payload));
-          showToast('Отправлено боту');
+          showToast("Отправлено боту");
           setTimeout(()=>{ try{ TG.close(); }catch(e){} }, 800);
-        } else { showToast('Открой через кнопку бота в Telegram'); }
-      }catch(err){ console.error(err); showToast('Ошибка отправки'); }
+        } else { showToast("Открой через кнопку бота в Telegram"); }
+      }catch(err){ console.error(err); showToast("Ошибка отправки"); }
     }
 
     // загрузка
-    const rawImg = getImgParamRobust();
-    if (rawImg) { loadWithFallback(rawImg); }
-    else { showToast('Открой страницу через кнопку в боте'); }
+    const raw = getImgParam();
+    if (raw) loadImageSmart(raw); else showToast("Открой страницу через кнопку в боте");
 
-    // на любые изменения геометрии — синхронизируем канвас
+    // синхронизация геометрии
     const relayout = () => layoutToImage();
-    window.addEventListener('resize', relayout);
-    window.visualViewport && window.visualViewport.addEventListener('resize', relayout);
-    window.addEventListener('orientationchange', relayout);
-    document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) relayout(); });
+    window.addEventListener("resize", relayout);
+    window.visualViewport?.addEventListener("resize", relayout);
+    window.addEventListener("orientationchange", relayout);
+    document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) relayout(); });
   })();
   </script>
 </body>
