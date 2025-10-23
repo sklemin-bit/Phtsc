@@ -3,60 +3,45 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"/>
-  <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self' https: data: blob:; img-src * data: blob: http: https:; connect-src * data: blob: https: http:; style-src 'self' 'unsafe-inline' https:; script-src 'self' https://telegram.org 'unsafe-inline' 'unsafe-eval';">
   <title>ScanBot — выбор углов</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     :root{
       --bg:#0b0f14; --fg:#e7eef7; --acc:#31b57c; --warn:#ff5555;
       --safe: env(safe-area-inset-bottom, 0px);
-      --head-h:48px; --hud-h:74px;
+      --head-h:48px;
     }
     *{box-sizing:border-box}
     html,body{height:100%}
     body{
       margin:0; background:var(--bg); color:var(--fg);
       font-family:system-ui,-apple-system,"Segoe UI",Roboto,Inter,Arial,sans-serif;
-      min-height:100dvh; overflow:hidden;
+      min-height:100dvh; display:flex; flex-direction:column;
     }
     header{
-      position:fixed; left:0; right:0; top:0; height:var(--head-h);
-      display:flex; align-items:center; padding:0 12px; font-weight:600; opacity:.9; z-index:10;
+      height:var(--head-h); display:flex; align-items:center;
+      padding:0 12px; font-weight:600; opacity:.9; flex:0 0 auto;
       background:linear-gradient(180deg, rgba(11,15,20,1) 0%, rgba(11,15,20,.85) 100%);
     }
 
+    /* Центрируем превью, снизу — панель с кнопками */
     #wrap{
-      position:fixed; left:0; right:0; top:var(--head-h);
-      height:calc(100dvh - var(--head-h) - var(--hud-h) - var(--safe));
-      display:flex; align-items:center; justify-content:center;
-      padding:6px 10px; overflow:hidden;
+      flex:1 1 auto; display:flex; align-items:center; justify-content:center;
+      padding:8px 10px; overflow:hidden;
     }
-    #stage{
-      position:relative; display:flex; align-items:center; justify-content:center;
-      width:100%; height:100%;
+    #stage{ position:relative; }
+    #img{
+      display:block; max-width:95%; max-height:calc(95vh - var(--head-h) - 90px);
+      width:auto; height:auto; object-fit:contain;
     }
-    /* Фон вместо <img> для стабильности в iOS */
-    #bg{
-      position:relative;
-      max-width:95%; max-height:95%;      /* −5% */
-      width:100%; height:100%;
-      background-position:center center;
-      background-repeat:no-repeat;
-      background-size:contain;
-      margin:auto;
-    }
-    #canvas{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); touch-action:none; }
+    #canvas{ position:absolute; top:0; left:0; touch-action:none; }
 
     .hud{
-      position:fixed; left:0; right:0; bottom:0;
-      height:var(--hud-h);
-      padding:10px 12px calc(10px + var(--safe));
+      flex:0 0 auto; padding:10px 12px calc(10px + var(--safe));
       background:linear-gradient(180deg, rgba(11,15,20,0) 0%, rgba(11,15,20,.9) 40%, rgba(11,15,20,1) 100%);
-      display:flex; align-items:center; justify-content:center; z-index:20;
     }
     .hud-inner{
-      width:100%; max-width:720px;
+      margin:0 auto; width:100%; max-width:720px;
       display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
       gap:10px; align-items:center; justify-items:center;
     }
@@ -85,7 +70,7 @@
 
   <div id="wrap">
     <div id="stage">
-      <div id="bg"></div>
+      <img id="img" alt="preview"/>
       <canvas id="canvas"></canvas>
     </div>
   </div>
@@ -101,49 +86,100 @@
   <script>
   ;(() => {
     const $ = s => document.querySelector(s);
-    const root = document.documentElement;
+    const img = $("#img"), canvas = $("#canvas"), ctx = canvas.getContext("2d",{alpha:true});
+    const toast=$("#toast");
     const TG = window.Telegram?.WebApp;
-    const bg = $("#bg");
-    const canvas = $("#canvas");
-    const ctx = canvas.getContext("2d", { alpha:true });
-    const toast = $("#toast");
 
     try { TG?.setBackgroundColor("#0b0f14"); TG?.setHeaderColor("#0b0f14"); TG?.expand(); TG?.ready(); TG?.MainButton?.hide(); } catch(e){}
 
-    const showToast = (s, ms=1400) => { toast.textContent=s; toast.style.display="block"; setTimeout(()=>toast.style.display="none", ms); };
+    const showToast=(s,ms=1400)=>{ toast.textContent=s; toast.style.display="block"; setTimeout(()=>toast.style.display="none",ms); };
 
     const st = { natW:0, natH:0, pts:[] };
 
-    function getParamFrom(hay,key){
-      const re=new RegExp('(?:[?&#])'+key+'=([^#&]+)'); const m=re.exec(hay); return m?decodeURIComponent(m[1]):null;
+    /* ---------- чтение параметров img из ? и # ---------- */
+    function getParamFrom(str, key){
+      const re = new RegExp('(?:[?&#])' + key + '=([^#&]+)');
+      const m = re.exec(str);
+      return m ? decodeURIComponent(m[1]) : null;
     }
-    function getParams(){
-      const href=String(location.href);
-      const p={
-        img: getParamFrom(location.hash,'img') || getParamFrom(location.search,'img') || (()=>{const i=href.indexOf('img='); return i>=0? decodeURIComponent(href.slice(i+4)) : ''})(),
-        iw:  parseInt(getParamFrom(location.hash,'iw') || getParamFrom(location.search,'iw') || '0',10),
-        ih:  parseInt(getParamFrom(location.hash,'ih') || getParamFrom(location.search,'ih') || '0',10),
-      };
-      return p;
+    function getImgParam(){
+      const href = String(location.href);
+      return getParamFrom(location.search,'img')
+          || getParamFrom(location.hash,'img')
+          || (()=>{ const i=href.indexOf('img='); return i>=0? decodeURIComponent(href.slice(i+4)) : ''; })();
     }
 
-    function sizeCanvasToBG(){
-      const r=bg.getBoundingClientRect();
-      const vw=Math.max(1,Math.round(r.width));
-      const vh=Math.max(1,Math.round(r.height));
-      canvas.width=vw; canvas.height=vh;
-      canvas.style.width=vw+"px"; canvas.style.height=vh+"px";
-      canvas.style.left="50%"; canvas.style.top="50%";
+    /* ---------- Weserv прокси ---------- */
+    function noScheme(u){
+      try{ const url=new URL(u); return url.host + url.pathname + (url.search||''); }
+      catch{ return (u||'').replace(/^https?:\/\//,''); }
+    }
+    function weserv(u, w=1600){
+      const core='url='+encodeURIComponent(noScheme(u));
+      return `https://images.weserv.nl/?${core}&output=jpg&w=${w}&h=${w}&fit=inside&q=85&cb=${Date.now()}`;
+    }
+    function normalize(u){
+      if (!u) return '';
+      if (u.includes('images.weserv.nl') || u.includes('wsrv.nl')){
+        const url = new URL(u, location.href);
+        url.searchParams.set('output','jpg');
+        url.searchParams.set('w','1600'); url.searchParams.set('h','1600');
+        url.searchParams.set('fit','inside'); url.searchParams.set('q','85');
+        return url.toString();
+      }
+      return u;
+    }
+
+    /* ---------- загрузка с фолбэком (PC/мобайл) ---------- */
+    function loadWithFallback(raw){
+      let fellBack = false;
+      let timer;
+
+      const tryDirect = () => {
+        clearTimeout(timer);
+        img.src = normalize(raw);
+        timer = setTimeout(() => {
+          if (!fellBack) { fellBack = true; img.src = weserv(raw, 1600); }
+        }, 2000);
+      };
+
+      img.onload = () => {
+        clearTimeout(timer);
+        st.natW = img.naturalWidth || img.width;
+        st.natH = img.naturalHeight || img.height;
+        layoutToImage();
+        setAutoFrame();
+      };
+      img.onerror = () => {
+        if (!fellBack) { fellBack = true; img.src = weserv(raw, 1600); }
+        else showToast('Не удалось загрузить превью изображения');
+      };
+
+      showToast('Загружаю превью…', 900);
+      tryDirect();
+    }
+
+    /* ---------- канвас поверх видимого изображения ---------- */
+    function layoutToImage(){
+      const vw = Math.max(1, Math.round(img.clientWidth));
+      const vh = Math.max(1, Math.round(img.clientHeight));
+      const stage = img.parentElement;
+      stage.style.width = vw + 'px';
+      stage.style.height = vh + 'px';
+      if (canvas.width !== vw) canvas.width = vw;
+      if (canvas.height !== vh) canvas.height = vh;
+      canvas.style.width = vw + 'px';
+      canvas.style.height = vh + 'px';
       draw();
     }
 
     function setAutoFrame(){
-      const w=canvas.width,h=canvas.height;
+      const w=canvas.width, h=canvas.height;
       st.pts=[{x:.08*w,y:.08*h},{x:.92*w,y:.08*h},{x:.92*w,y:.92*h},{x:.08*w,y:.92*h}];
       draw();
     }
     function resetFrame(){
-      const w=canvas.width,h=canvas.height;
+      const w=canvas.width, h=canvas.height;
       st.pts=[{x:.05*w,y:.05*h},{x:.95*w,y:.05*h},{x:.95*w,y:.95*h},{x:.05*w,y:.95*h}];
       draw();
     }
@@ -151,69 +187,61 @@
     function draw(){
       const w=canvas.width,h=canvas.height;
       ctx.clearRect(0,0,w,h);
-      if(st.pts.length!==4) return;
+      if (st.pts.length!==4) return;
 
+      // затемнение
       ctx.save();
       ctx.fillStyle="rgba(0,0,0,.35)"; ctx.fillRect(0,0,w,h);
       ctx.globalCompositeOperation="destination-out";
       ctx.beginPath(); st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) }); ctx.closePath(); ctx.fill();
       ctx.restore();
 
+      // рамка
       ctx.lineWidth=2; ctx.strokeStyle="rgba(49,181,124,.95)";
       ctx.beginPath(); st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) }); ctx.closePath(); ctx.stroke();
 
-      for(const p of st.pts){
+      // маркеры
+      for (const p of st.pts){
         ctx.beginPath(); ctx.arc(p.x,p.y,8,0,Math.PI*2); ctx.fillStyle="#31b57c"; ctx.fill();
         ctx.beginPath(); ctx.arc(p.x,p.y,3,0,Math.PI*2); ctx.fillStyle="#06120c"; ctx.fill();
       }
     }
 
+    // перетаскивание
     let dragIndex=-1;
     function hit(x,y){ for(let i=0;i<st.pts.length;i++){ const p=st.pts[i],dx=p.x-x,dy=p.y-y; if(dx*dx+dy*dy<=169) return i; } return -1; }
     canvas.addEventListener("pointerdown",(e)=>{ const r=canvas.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top; dragIndex=hit(x,y); if(dragIndex>=0){ e.preventDefault(); canvas.setPointerCapture?.(e.pointerId);} },{passive:false});
     canvas.addEventListener("pointermove",(e)=>{ if(dragIndex<0)return; const r=canvas.getBoundingClientRect(); let x=e.clientX-r.left,y=e.clientY-r.top; x=Math.max(0,Math.min(canvas.width,x)); y=Math.max(0,Math.min(canvas.height,y)); st.pts[dragIndex].x=x; st.pts[dragIndex].y=y; draw(); },{passive:true});
     canvas.addEventListener("pointerup",(e)=>{ dragIndex=-1; canvas.releasePointerCapture?.(e.pointerId); });
 
+    // кнопки
     $("#resetBtn").addEventListener("click",(e)=>{ e.preventDefault(); resetFrame(); });
     $("#fitBtn").addEventListener("click",(e)=>{ e.preventDefault(); setAutoFrame(); });
     $("#sendBtn").addEventListener("click",(e)=>{ e.preventDefault(); doSend(); });
 
     function buildPayload(){
-      const pts=st.pts.map(p=>[+(p.x.toFixed(2)), +(p.y.toFixed(2))]);
+      const pts = st.pts.map(p=>[+(p.x.toFixed(2)), +(p.y.toFixed(2))]);
       return { pts, canvas_w:canvas.width, canvas_h:canvas.height, img_w:st.natW, img_h:st.natH, ts:Date.now() };
     }
     function doSend(){
-      if(st.pts.length!==4){ showToast("Нужно поставить 4 точки"); return; }
-      const payload=buildPayload();
+      if (st.pts.length!==4){ showToast("Нужно поставить 4 точки"); return; }
+      const payload = buildPayload();
       try{
         if (TG?.sendData){
           TG.HapticFeedback?.impactOccurred?.("medium");
           TG.sendData(JSON.stringify(payload));
           showToast("Отправлено боту");
           setTimeout(()=>{ try{ TG.close(); }catch(e){} }, 800);
-        } else {
-          showToast("Открой через кнопку бота в Telegram");
-        }
+        } else { showToast("Открой через кнопку бота в Telegram"); }
       }catch(err){ console.error(err); showToast("Ошибка отправки"); }
     }
 
-    const p=getParams();
-    if(!p.img){
-      showToast("Открой страницу через кнопку в боте");
-    } else {
-      bg.style.backgroundImage = `url("${p.img.replace(/"/g,"%22")}")`;
-      st.natW = (p.iw>0 ? p.iw : 1000);
-      st.natH = (p.ih>0 ? p.ih : 1000);
-      const pass=()=>{ sizeCanvasToBG(); requestAnimationFrame(()=>sizeCanvasToBG()); setTimeout(sizeCanvasToBG,60); setTimeout(sizeCanvasToBG,140); };
-      pass(); setAutoFrame();
-    }
+    // запуск
+    const raw = getImgParam();
+    if (raw) loadWithFallback(raw); else showToast("Открой страницу через кнопку в боте");
 
-    function measureHud(){
-      const hud = document.querySelector('.hud');
-      const h = Math.round(hud.getBoundingClientRect().height || 74);
-      root.style.setProperty('--hud-h', h + 'px');
-    }
-    function relayout(){ measureHud(); sizeCanvasToBG(); }
+    // синхронизация геометрии
+    const relayout = () => layoutToImage();
     window.addEventListener("resize", relayout);
     window.visualViewport?.addEventListener("resize", relayout);
     window.addEventListener("orientationchange", relayout);
