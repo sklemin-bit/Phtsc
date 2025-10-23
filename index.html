@@ -31,7 +31,7 @@
     }
     #stage{ position:relative; }
     #img{
-      display:block; max-width:95%; max-height:95%;   /* -5% как просили */
+      display:block; max-width:95%; max-height:95%;   /* -5% */
       width:auto; height:auto; object-fit:contain;
     }
     #canvas{ position:absolute; top:0; left:0; touch-action:none; }
@@ -78,7 +78,7 @@
 
   <div id="wrap">
     <div id="stage">
-      <!-- ВАЖНО: без crossorigin/referrerpolicy — iOS WebView иногда блокирует такие загрузки -->
+      <!-- без crossorigin/referrerpolicy — iOS иногда блокирует такие загрузки -->
       <img id="img" alt="preview" decoding="async"/>
       <canvas id="canvas"></canvas>
     </div>
@@ -110,11 +110,40 @@
 
     const st = { natW:0, natH:0, pts:[] };
 
+    /* ---------- IMG URL: надёжный парсер + фолбэк ---------- */
+    function getImgParamRobust(){
+      // 1) сначала стандартно
+      const qs = new URLSearchParams(location.search);
+      let u = qs.get("img");
+      // 2) если разорвало на части (например, &output=jpg ушёл наружу) — восстановим
+      if (u && (u.includes("images.weserv.nl") || u.includes("wsrv.nl"))) {
+        const restKeys = ["output","w","h","q","fit","af","n"];
+        const extras = [];
+        for (const k of restKeys) if (qs.has(k)) extras.push(`${k}=${encodeURIComponent(qs.get(k) || "")}`);
+        if (extras.length) u = u + (u.includes("?") ? "&" : "?") + extras.join("&");
+        return u;
+      }
+      // 3) если всё ещё пусто/криво — возьмём «хвост» после img=
+      if (!u) {
+        const href = String(location.href);
+        const idx = href.indexOf("img=");
+        if (idx >= 0) {
+          u = decodeURIComponent(href.slice(idx + 4));
+        }
+      }
+      return u || "";
+    }
+
     function noScheme(u){
       try{
         const url = new URL(u);
         return url.host + url.pathname + (url.search||"");
       }catch{ return u.replace(/^https?:\/\//,''); }
+    }
+
+    function toWeserv(u){
+      const ns = encodeURIComponent(noScheme(u));
+      return `https://images.weserv.nl/?url=${ns}&output=jpg`;
     }
 
     function loadWithFallback(originalUrl){
@@ -133,16 +162,7 @@
       const tryProxy = () => {
         triedProxy = true;
         clearTimeout(timeoutId);
-        const noSch = encodeURIComponent(noScheme(originalUrl));
-        // основной домен
-        const weserv = `https://images.weserv.nl/?url=${noSch}&output=jpg`;
-        img.src = weserv;
-        // запасной таймаут (если вдруг не сработает)
-        timeoutId = setTimeout(() => {
-          // альтернативный домен сервиса
-          const wsrv = `https://wsrv.nl/?url=${noSch}&output=jpg`;
-          img.src = wsrv;
-        }, 2000);
+        img.src = toWeserv(originalUrl);
       };
 
       img.onload = () => {
@@ -165,8 +185,9 @@
       tryDirect();
     }
 
+    /* ---------- Вёрстка/канвас ---------- */
     function layoutToImage(){
-      // делаем stage и canvas ровно размером видимой картинки
+      // stage и canvas ровно размером видимой картинки
       const vw = Math.max(1, img.clientWidth);
       const vh = Math.max(1, img.clientHeight);
       stage.style.width  = vw + "px";
@@ -273,10 +294,8 @@
     }
 
     // загрузка/адаптация
-    const qs = new URLSearchParams(location.search);
-    const imgURL = qs.get("img");
-
-    if (imgURL){ loadWithFallback(imgURL); }
+    const rawImg = getImgParamRobust();
+    if (rawImg) { loadWithFallback(rawImg); }
     else { showToast("Открой страницу через кнопку в боте"); }
 
     function relayout(){ layoutToImage(); }
