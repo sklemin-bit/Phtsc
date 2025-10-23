@@ -31,12 +31,12 @@
     }
     #stage{ position:relative; }
     #img{
-      display:block; max-width:95%; max-height:95%;
+      display:block; max-width:95%; max-height:95%;   /* -5% как просили */
       width:auto; height:auto; object-fit:contain;
     }
     #canvas{ position:absolute; top:0; left:0; touch-action:none; }
 
-    /* HUD — в потоке, центр, адаптивная сетка; ничего не вылезает за край на iPhone */
+    /* HUD — в потоке, адаптивная сетка; на iPhone ничего не вылезает за край */
     .hud{
       flex:0 0 auto;
       padding:10px 12px calc(10px + var(--safe));
@@ -45,9 +45,9 @@
     .hud-inner{
       margin:0 auto;
       width:100%;
-      max-width:720px;                   /* ограничение на больших экранах */
+      max-width:720px;
       display:grid;
-      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); /* авто-колонки */
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
       gap:10px;
       align-items:center;
       justify-items:center;
@@ -55,9 +55,7 @@
     .btn{
       appearance:none; border:none; border-radius:12px;
       padding:12px 14px;
-      width:100%;            /* занимает всю ширину своей ячейки */
-      min-width:0;           /* чтобы не распирало грид на iOS */
-      text-align:center;
+      width:100%; min-width:0; text-align:center;
       background:#1b2430; color:var(--fg); font-weight:600; font-size:14px;
       box-shadow:0 1px 0 rgba(255,255,255,.05) inset, 0 0 0 1px rgba(255,255,255,.04);
       cursor:pointer;
@@ -80,7 +78,8 @@
 
   <div id="wrap">
     <div id="stage">
-      <img id="img" alt="preview" crossorigin="anonymous" referrerpolicy="no-referrer"/>
+      <!-- ВАЖНО: без crossorigin/referrerpolicy — iOS WebView иногда блокирует такие загрузки -->
+      <img id="img" alt="preview" decoding="async"/>
       <canvas id="canvas"></canvas>
     </div>
   </div>
@@ -111,8 +110,63 @@
 
     const st = { natW:0, natH:0, pts:[] };
 
+    function noScheme(u){
+      try{
+        const url = new URL(u);
+        return url.host + url.pathname + (url.search||"");
+      }catch{ return u.replace(/^https?:\/\//,''); }
+    }
+
+    function loadWithFallback(originalUrl){
+      let triedProxy = false;
+      let timeoutId;
+
+      const tryDirect = () => {
+        clearTimeout(timeoutId);
+        img.src = originalUrl;
+        // если не загрузилось за 2500мс — пробуем прокси
+        timeoutId = setTimeout(() => {
+          if (!triedProxy) { tryProxy(); }
+        }, 2500);
+      };
+
+      const tryProxy = () => {
+        triedProxy = true;
+        clearTimeout(timeoutId);
+        const noSch = encodeURIComponent(noScheme(originalUrl));
+        // основной домен
+        const weserv = `https://images.weserv.nl/?url=${noSch}&output=jpg`;
+        img.src = weserv;
+        // запасной таймаут (если вдруг не сработает)
+        timeoutId = setTimeout(() => {
+          // альтернативный домен сервиса
+          const wsrv = `https://wsrv.nl/?url=${noSch}&output=jpg`;
+          img.src = wsrv;
+        }, 2000);
+      };
+
+      img.onload = () => {
+        clearTimeout(timeoutId);
+        st.natW = img.naturalWidth || img.width;
+        st.natH = img.naturalHeight || img.height;
+        layoutToImage();
+        setAutoFrame();
+      };
+
+      img.onerror = () => {
+        if (!triedProxy) {
+          tryProxy();
+        } else {
+          showToast("Не удалось загрузить превью изображения");
+        }
+      };
+
+      showToast("Загружаю превью…", 900);
+      tryDirect();
+    }
+
     function layoutToImage(){
-      // stage и canvas ровно размером видимой картинки
+      // делаем stage и canvas ровно размером видимой картинки
       const vw = Math.max(1, img.clientWidth);
       const vh = Math.max(1, img.clientHeight);
       stage.style.width  = vw + "px";
@@ -222,21 +276,14 @@
     const qs = new URLSearchParams(location.search);
     const imgURL = qs.get("img");
 
-    img.addEventListener("load", ()=>{
-      st.natW = img.naturalWidth || img.width;
-      st.natH = img.naturalHeight || img.height;
-      layoutToImage();
-      setAutoFrame();
-    });
-    img.addEventListener("error", ()=>{ showToast("Не удалось загрузить превью изображения"); });
+    if (imgURL){ loadWithFallback(imgURL); }
+    else { showToast("Открой страницу через кнопку в боте"); }
 
     function relayout(){ layoutToImage(); }
     window.addEventListener("resize", relayout);
     window.visualViewport && window.visualViewport.addEventListener("resize", relayout);
     window.addEventListener("orientationchange", relayout);
     document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) relayout(); });
-
-    if (imgURL){ img.src = imgURL; } else { showToast("Открой страницу через кнопку в боте"); }
   })();
   </script>
 </body>
