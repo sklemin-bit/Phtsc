@@ -24,11 +24,8 @@
       background:linear-gradient(180deg, rgba(11,15,20,1) 0%, rgba(11,15,20,.85) 100%);
     }
 
-    /* Центрируем превью, снизу — панель с кнопками */
-    #wrap{
-      flex:1 1 auto; display:flex; align-items:center; justify-content:center;
-      padding:8px 10px; overflow:hidden;
-    }
+    #wrap{ flex:1 1 auto; display:flex; align-items:center; justify-content:center;
+      padding:8px 10px; overflow:hidden; }
     #stage{ position:relative; }
     #img{
       display:block; max-width:95%; max-height:calc(95vh - var(--head-h) - 90px);
@@ -58,7 +55,7 @@
 
     #toast{
       position:fixed; top:12px; left:50%; transform:translateX(-50%);
-      background:#1b2430; color:var(--fg); padding:8px 12px; border-radius:8px;
+      background:#1b2430; color:#e7eef7; padding:8px 12px; border-radius:8px;
       font-size:13px; box-shadow:0 6px 18px rgba(0,0,0,.35); display:none; z-index:1000;
       max-width:90vw; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
     }
@@ -66,7 +63,7 @@
 </head>
 <body>
   <div id="toast"></div>
-  <header>Выдели края документа</header>
+  <header>Выбор углов</header>
 
   <div id="wrap">
     <div id="stage">
@@ -96,7 +93,6 @@
 
     const st = { natW:0, natH:0, pts:[] };
 
-    /* ---------- чтение параметров img из ? и # ---------- */
     function getParamFrom(str, key){
       const re = new RegExp('(?:[?&#])' + key + '=([^#&]+)');
       const m = re.exec(str);
@@ -109,7 +105,7 @@
           || (()=>{ const i=href.indexOf('img='); return i>=0? decodeURIComponent(href.slice(i+4)) : ''; })();
     }
 
-    /* ---------- Weserv прокси ---------- */
+    // Weserv proxy
     function noScheme(u){
       try{ const url=new URL(u); return url.host + url.pathname + (url.search||''); }
       catch{ return (u||'').replace(/^https?:\/\//,''); }
@@ -130,7 +126,6 @@
       return u;
     }
 
-    /* ---------- загрузка с фолбэком (PC/мобайл) ---------- */
     function loadWithFallback(raw){
       let fellBack = false;
       let timer;
@@ -140,7 +135,7 @@
         img.src = normalize(raw);
         timer = setTimeout(() => {
           if (!fellBack) { fellBack = true; img.src = weserv(raw, 1600); }
-        }, 2000);
+        }, 1500);
       };
 
       img.onload = () => {
@@ -159,7 +154,6 @@
       tryDirect();
     }
 
-    /* ---------- канвас поверх видимого изображения ---------- */
     function layoutToImage(){
       const vw = Math.max(1, Math.round(img.clientWidth));
       const vh = Math.max(1, Math.round(img.clientHeight));
@@ -189,32 +183,27 @@
       ctx.clearRect(0,0,w,h);
       if (st.pts.length!==4) return;
 
-      // затемнение
       ctx.save();
       ctx.fillStyle="rgba(0,0,0,.35)"; ctx.fillRect(0,0,w,h);
       ctx.globalCompositeOperation="destination-out";
       ctx.beginPath(); st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) }); ctx.closePath(); ctx.fill();
       ctx.restore();
 
-      // рамка
       ctx.lineWidth=2; ctx.strokeStyle="rgba(49,181,124,.95)";
       ctx.beginPath(); st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) }); ctx.closePath(); ctx.stroke();
 
-      // маркеры
       for (const p of st.pts){
         ctx.beginPath(); ctx.arc(p.x,p.y,8,0,Math.PI*2); ctx.fillStyle="#31b57c"; ctx.fill();
         ctx.beginPath(); ctx.arc(p.x,p.y,3,0,Math.PI*2); ctx.fillStyle="#06120c"; ctx.fill();
       }
     }
 
-    // перетаскивание
     let dragIndex=-1;
     function hit(x,y){ for(let i=0;i<st.pts.length;i++){ const p=st.pts[i],dx=p.x-x,dy=p.y-y; if(dx*dx+dy*dy<=169) return i; } return -1; }
     canvas.addEventListener("pointerdown",(e)=>{ const r=canvas.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top; dragIndex=hit(x,y); if(dragIndex>=0){ e.preventDefault(); canvas.setPointerCapture?.(e.pointerId);} },{passive:false});
     canvas.addEventListener("pointermove",(e)=>{ if(dragIndex<0)return; const r=canvas.getBoundingClientRect(); let x=e.clientX-r.left,y=e.clientY-r.top; x=Math.max(0,Math.min(canvas.width,x)); y=Math.max(0,Math.min(canvas.height,y)); st.pts[dragIndex].x=x; st.pts[dragIndex].y=y; draw(); },{passive:true});
     canvas.addEventListener("pointerup",(e)=>{ dragIndex=-1; canvas.releasePointerCapture?.(e.pointerId); });
 
-    // кнопки
     $("#resetBtn").addEventListener("click",(e)=>{ e.preventDefault(); resetFrame(); });
     $("#fitBtn").addEventListener("click",(e)=>{ e.preventDefault(); setAutoFrame(); });
     $("#sendBtn").addEventListener("click",(e)=>{ e.preventDefault(); doSend(); });
@@ -236,11 +225,9 @@
       }catch(err){ console.error(err); showToast("Ошибка отправки"); }
     }
 
-    // запуск
     const raw = getImgParam();
     if (raw) loadWithFallback(raw); else showToast("Открой страницу через кнопку в боте");
 
-    // синхронизация геометрии
     const relayout = () => layoutToImage();
     window.addEventListener("resize", relayout);
     window.visualViewport?.addEventListener("resize", relayout);
