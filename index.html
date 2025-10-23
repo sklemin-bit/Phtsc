@@ -3,42 +3,58 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"/>
-  <!-- CSP: явно разрешаем любые источники для <img>, blob:, data: -->
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self' https: data: blob:; img-src * data: blob: http: https:; connect-src * data: blob: https: http:; style-src 'self' 'unsafe-inline' https:; script-src 'self' https://telegram.org 'unsafe-inline' 'unsafe-eval';">
   <title>ScanBot — выбор углов</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    :root{ --bg:#0b0f14; --fg:#e7eef7; --acc:#31b57c; --warn:#ff5555; --safe: env(safe-area-inset-bottom, 0px); }
+    :root{
+      --bg:#0b0f14; --fg:#e7eef7; --acc:#31b57c; --warn:#ff5555;
+      --safe: env(safe-area-inset-bottom, 0px);
+      --head-h:48px;
+      --hud-h:74px; /* фактическая высота нижней панели (под iPhone с safe-area) */
+    }
     *{box-sizing:border-box}
     html,body{height:100%}
     body{
       margin:0; background:var(--bg); color:var(--fg);
       font-family:system-ui,-apple-system,"Segoe UI",Roboto,Inter,Arial,sans-serif;
-      display:flex; flex-direction:column; min-height:100dvh;
+      min-height:100dvh; overflow:hidden;
     }
-    header{ padding:10px 12px; font-weight:600; letter-spacing:.2px; opacity:.9; flex:0 0 auto; }
 
-    /* Превью между шапкой и HUD */
+    header{
+      position:fixed; left:0; right:0; top:0; height:var(--head-h);
+      display:flex; align-items:center; padding:0 12px; font-weight:600; opacity:.9; z-index:10;
+      background:linear-gradient(180deg, rgba(11,15,20,1) 0%, rgba(11,15,20,.85) 100%);
+    }
+
+    /* Область превью: фикс. высота = экран − header − HUD − safe-area  */
     #wrap{
-      flex:1 1 auto; display:flex; align-items:center; justify-content:center;
-      overflow:hidden; padding:6px 10px; min-height:160px;
+      position:fixed; left:0; right:0;
+      top:var(--head-h);
+      height:calc(100dvh - var(--head-h) - var(--hud-h) - var(--safe));
+      display:flex; align-items:center; justify-content:center;
+      padding:6px 10px; overflow:hidden;
     }
-    #stage{ position:relative; }
+    #stage{ position:relative; display:flex; align-items:center; justify-content:center; }
     #img{
-      display:block; max-width:95%; max-height:95%; /* -5% как просили */
+      display:block; max-width:95%; max-height:95%; /* -5% */
       width:auto; height:auto; object-fit:contain;
+      /* для iOS, чтобы размеры считались честно */
+      contain:layout paint size; 
     }
-    #canvas{ position:absolute; top:0; left:0; touch-action:none; }
+    #canvas{ position:absolute; inset:0; touch-action:none; }
 
-    /* HUD — в потоке, адаптивная сетка */
+    /* HUD фиксирован снизу, по центру; не перекрывает, т.к. высота учтена в #wrap */
     .hud{
-      flex:0 0 auto;
+      position:fixed; left:0; right:0; bottom:0;
+      height:var(--hud-h);
       padding:10px 12px calc(10px + var(--safe));
       background:linear-gradient(180deg, rgba(11,15,20,0) 0%, rgba(11,15,20,.9) 40%, rgba(11,15,20,1) 100%);
+      display:flex; align-items:center; justify-content:center; z-index:20;
     }
     .hud-inner{
-      margin:0 auto; width:100%; max-width:720px;
+      width:100%; max-width:720px;
       display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
       gap:10px; align-items:center; justify-items:center;
     }
@@ -59,15 +75,15 @@
       font-size:13px; box-shadow:0 6px 18px rgba(0,0,0,.35); display:none; z-index:1000;
       max-width:90vw; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
     }
+    body.ready #wrap{ visibility:visible }
   </style>
 </head>
 <body>
   <div id="toast"></div>
   <header>Выдели края документа</header>
 
-  <div id="wrap">
+  <div id="wrap" style="visibility:hidden">
     <div id="stage">
-      <!-- без crossorigin/referrerpolicy — iOS WKWebView может блокировать -->
       <img id="img" alt="preview"/>
       <canvas id="canvas"></canvas>
     </div>
@@ -84,10 +100,11 @@
   <script>
   ;(() => {
     const $ = (s) => document.querySelector(s);
-    const img = $("#img"), stage = $("#stage"), canvas = $("#canvas");
-    const ctx = canvas.getContext("2d", { alpha: true });
+    const doc = document, root = doc.documentElement;
+    const img = $("#img"), stage = $("#stage"), canvas = $("#canvas"), ctx = canvas.getContext("2d", { alpha:true });
     const toast = $("#toast");
 
+    // Telegram UI
     const TG = window.Telegram?.WebApp;
     try { TG?.setBackgroundColor("#0b0f14"); TG?.setHeaderColor("#0b0f14"); TG?.expand(); TG?.ready(); TG?.MainButton?.hide(); } catch(e){}
 
@@ -95,18 +112,7 @@
 
     const st = { natW:0, natH:0, pts:[] };
 
-    /* ------------ ПАРСИНГ URL КАРТИНКИ (query + hash) ------------ */
-    function getParamFrom(str, key){
-      const re = new RegExp('(?:[?&#])' + key + '=([^#&]+)');
-      const m = re.exec(str); return m ? decodeURIComponent(m[1]) : null;
-    }
-    function getImgParam(){
-      return getParamFrom(location.search,'img')
-          || getParamFrom(location.hash,'img')
-          || (() => { const href=String(location.href); const i=href.indexOf('img='); return i>=0 ? decodeURIComponent(href.slice(i+4)) : ''; })();
-    }
-
-    /* ------------ ПРОКСИ + ДАУНСКЕЙЛ ДЛЯ iOS ------------ */
+    /* ----------------- Helpers ----------------- */
     const isIOS = /iP(ad|hone|od)/i.test(navigator.userAgent);
     function noScheme(u){ try{ const url=new URL(u); return url.host + url.pathname + (url.search||''); } catch{ return (u||'').replace(/^https?:\/\//,''); } }
     function weserv(u, w=1400){
@@ -117,18 +123,22 @@
       const core = 'url=' + encodeURIComponent(noScheme(u));
       return `https://wsrv.nl/?${core}&output=jpg&w=${w}&h=${w}&fit=inside&q=85&cb=${Date.now()}`;
     }
-    function normalizeForPlatform(raw){
+    function getParamFrom(str, key){
+      const re = new RegExp('(?:[?&#])' + key + '=([^#&]+)'); const m = re.exec(str); return m ? decodeURIComponent(m[1]) : null;
+    }
+    function getImgParam(){
+      return getParamFrom(location.search,'img')
+          || getParamFrom(location.hash,'img')
+          || (()=>{ const href=String(location.href); const i=href.indexOf('img='); return i>=0? decodeURIComponent(href.slice(i+4)) : ''; })();
+    }
+
+    /* ----- Жёсткая стратегия загрузки для iPhone ----- */
+    function chooseInitialURL(raw){
       if (!raw) return '';
-      // если уже прокси — дожмём параметры
-      if (raw.includes('images.weserv.nl') || raw.includes('wsrv.nl')){
-        const url = new URL(raw, location.href);
-        url.searchParams.set('output','jpg');
-        url.searchParams.set('w','1400'); url.searchParams.set('h','1400'); url.searchParams.set('fit','inside'); url.searchParams.set('q','85');
-        url.searchParams.set('cb', String(Date.now()));
-        return url.toString();
+      if (/^https?:\/\/api\.telegram\.org\/file\/bot/i.test(raw)) {
+        // iOS сразу через прокси
+        return weserv(raw, 1400);
       }
-      // на iOS: ТОЛЬКО через прокси (особенно для api.telegram.org/file/bot...)
-      if (isIOS) return weserv(raw, 1400);
       return raw;
     }
 
@@ -136,18 +146,16 @@
       let triedAltProxy = false;
       let timer;
 
-      const directOrProxy = normalizeForPlatform(raw);
+      const first = chooseInitialURL(raw);
 
       const tryLoad = (url) => {
         clearTimeout(timer);
         img.src = url;
+        // если в течение 2500мс не появилось — на прокси
         timer = setTimeout(() => {
-          if (!isIOS && !triedAltProxy) { // на не-iOS после таймаута — в прокси
+          if (!triedAltProxy) {
             triedAltProxy = true;
-            img.src = weserv(raw, 1400);
-          } else if (!triedAltProxy) {
-            triedAltProxy = true;
-            img.src = wsrv(raw, 1400);
+            img.src = url.includes('images.weserv.nl') ? wsrv(raw, 1400) : weserv(raw, 1400);
           }
         }, 2500);
       };
@@ -156,31 +164,41 @@
         clearTimeout(timer);
         st.natW = img.naturalWidth || img.width;
         st.natH = img.naturalHeight || img.height;
-        layoutToImage();
+        // несколько проходов layout для iOS
+        const pass = () => {
+          layoutToImage();
+          requestAnimationFrame(()=> layoutToImage());
+          setTimeout(layoutToImage, 60);
+          setTimeout(layoutToImage, 140);
+        };
+        pass();
         setAutoFrame();
+        document.body.classList.add('ready');
       };
 
       img.onerror = () => {
         if (!triedAltProxy) {
           triedAltProxy = true;
-          img.src = wsrv(raw, 1400);
+          img.src = first.includes('images.weserv.nl') ? wsrv(raw, 1400) : weserv(raw, 1400);
         } else {
           showToast("Не удалось загрузить превью изображения");
         }
       };
 
       showToast("Загружаю превью…", 900);
-      tryLoad(directOrProxy);
+      tryLoad(first);
     }
 
-    /* ------------ ВЕРСТКА/КАНВАС ------------ */
+    /* ----------------- Геометрия/канвас ----------------- */
     function layoutToImage(){
-      const vw = Math.max(1, img.clientWidth);
-      const vh = Math.max(1, img.clientHeight);
+      // измеряем реальные размеры картинки на экране
+      const r = img.getBoundingClientRect();
+      const vw = Math.max(1, Math.round(r.width));
+      const vh = Math.max(1, Math.round(r.height));
       stage.style.width  = vw + "px";
       stage.style.height = vh + "px";
-      canvas.width  = vw;
-      canvas.height = vh;
+      if (canvas.width !== vw)  canvas.width  = vw;
+      if (canvas.height !== vh) canvas.height = vh;
       canvas.style.width  = vw + "px";
       canvas.style.height = vh + "px";
       draw();
@@ -188,15 +206,13 @@
 
     function setAutoFrame(){
       const w=canvas.width, h=canvas.height;
-      st.pts=[
-        {x:.08*w,y:.08*h},{x:.92*w,y:.08*h},{x:.92*w,y:.92*h},{x:.08*w,y:.92*h}
-      ]; draw();
+      st.pts=[ {x:.08*w,y:.08*h},{x:.92*w,y:.08*h},{x:.92*w,y:.92*h},{x:.08*w,y:.92*h} ];
+      draw();
     }
     function resetFrame(){
       const w=canvas.width, h=canvas.height;
-      st.pts=[
-        {x:.05*w,y:.05*h},{x:.95*w,y:.05*h},{x:.95*w,y:.95*h},{x:.05*w,y:.95*h}
-      ]; draw();
+      st.pts=[ {x:.05*w,y:.05*h},{x:.95*w,y:.05*h},{x:.95*w,y:.95*h},{x:.05*w,y:.95*h} ];
+      draw();
     }
 
     function draw(){
@@ -208,11 +224,11 @@
       ctx.fillStyle="rgba(0,0,0,.35)";
       ctx.fillRect(0,0,w,h);
       ctx.globalCompositeOperation="destination-out";
-      ctx.beginPath(); st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) }); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y)}); ctx.closePath(); ctx.fill();
       ctx.restore();
 
       ctx.lineWidth=2; ctx.strokeStyle="rgba(49,181,124,.95)";
-      ctx.beginPath(); st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) }); ctx.closePath(); ctx.stroke();
+      ctx.beginPath(); st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y)}); ctx.closePath(); ctx.stroke();
 
       for (const p of st.pts){
         ctx.beginPath(); ctx.arc(p.x,p.y,8,0,Math.PI*2); ctx.fillStyle="#31b57c"; ctx.fill();
@@ -249,16 +265,25 @@
       }catch(err){ console.error(err); showToast("Ошибка отправки"); }
     }
 
-    // загрузка
-    const raw = getImgParam();
-    if (raw) loadImageSmart(raw); else showToast("Открой страницу через кнопку в боте");
+    /* ----------------- Запуск ----------------- */
+    // динамически меряем HUD (под разные safe-area), сохраняем в CSS-переменную
+    function measureHud(){
+      const hud = document.querySelector('.hud');
+      const h = Math.round(hud.getBoundingClientRect().height || 74);
+      root.style.setProperty('--hud-h', h + 'px');
+    }
+    function relayoutAll(){
+      measureHud();
+      layoutToImage();
+    }
+    window.addEventListener("resize", relayoutAll);
+    window.visualViewport?.addEventListener("resize", relayoutAll);
+    window.addEventListener("orientationchange", relayoutAll);
+    document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) relayoutAll(); });
 
-    // синхронизация геометрии
-    const relayout = () => layoutToImage();
-    window.addEventListener("resize", relayout);
-    window.visualViewport?.addEventListener("resize", relayout);
-    window.addEventListener("orientationchange", relayout);
-    document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) relayout(); });
+    const raw = getImgParam();
+    if (raw) { loadImageSmart(raw); }
+    else { showToast("Открой страницу через кнопку в боте"); document.body.classList.add('ready'); relayoutAll(); }
   })();
   </script>
 </body>
