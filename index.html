@@ -22,12 +22,11 @@
       flex:0 0 auto;
     }
 
-    /* Превью занимает всё пространство между шапкой и HUD */
+    /* Превью между шапкой и HUD */
     #wrap{
       flex:1 1 auto;
       display:flex; align-items:center; justify-content:center;
-      overflow:hidden; padding:6px 10px;
-      min-height:160px;
+      overflow:hidden; padding:6px 10px; min-height:160px;
     }
     #stage{ position:relative; }
     #img{
@@ -36,26 +35,20 @@
     }
     #canvas{ position:absolute; top:0; left:0; touch-action:none; }
 
-    /* HUD — в потоке, адаптивная сетка; на iPhone ничего не вылезает за край */
+    /* HUD — в потоке, адаптивная сетка (на iPhone ничего не вылезает) */
     .hud{
       flex:0 0 auto;
       padding:10px 12px calc(10px + var(--safe));
       background:linear-gradient(180deg, rgba(11,15,20,0) 0%, rgba(11,15,20,.9) 40%, rgba(11,15,20,1) 100%);
     }
     .hud-inner{
-      margin:0 auto;
-      width:100%;
-      max-width:720px;
-      display:grid;
-      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-      gap:10px;
-      align-items:center;
-      justify-items:center;
+      margin:0 auto; width:100%; max-width:720px;
+      display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap:10px; align-items:center; justify-items:center;
     }
     .btn{
       appearance:none; border:none; border-radius:12px;
-      padding:12px 14px;
-      width:100%; min-width:0; text-align:center;
+      padding:12px 14px; width:100%; min-width:0; text-align:center;
       background:#1b2430; color:var(--fg); font-weight:600; font-size:14px;
       box-shadow:0 1px 0 rgba(255,255,255,.05) inset, 0 0 0 1px rgba(255,255,255,.04);
       cursor:pointer;
@@ -78,8 +71,8 @@
 
   <div id="wrap">
     <div id="stage">
-      <!-- без crossorigin/referrerpolicy — iOS иногда блокирует такие загрузки -->
-      <img id="img" alt="preview" decoding="async"/>
+      <!-- без crossorigin/referrerpolicy — iOS WebView может блокировать -->
+      <img id="img" alt="preview"/>
       <canvas id="canvas"></canvas>
     </div>
   </div>
@@ -102,100 +95,103 @@
     const toast   = $("#toast");
 
     const TG = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
-    if (TG) {
-      try { TG.setBackgroundColor("#0b0f14"); TG.setHeaderColor("#0b0f14"); TG.expand(); TG.ready(); TG.MainButton.hide(); } catch(e){}
-    }
+    if (TG) { try { TG.setBackgroundColor("#0b0f14"); TG.setHeaderColor("#0b0f14"); TG.expand(); TG.ready(); TG.MainButton.hide(); } catch(e){} }
 
     const showToast = (s, ms=1400) => { toast.textContent=s; toast.style.display="block"; setTimeout(()=>toast.style.display="none", ms); };
 
     const st = { natW:0, natH:0, pts:[] };
 
-    /* ---------- IMG URL: надёжный парсер + фолбэк ---------- */
+    /* ----------------- Надёжный разбор URL картинки ----------------- */
+    function getParamFrom(str, key){
+      const re = new RegExp('(?:[?&#])' + key + '=([^#&]+)');
+      const m = re.exec(str);
+      return m ? decodeURIComponent(m[1]) : null;
+    }
     function getImgParamRobust(){
-      // 1) сначала стандартно
-      const qs = new URLSearchParams(location.search);
-      let u = qs.get("img");
-      // 2) если разорвало на части (например, &output=jpg ушёл наружу) — восстановим
-      if (u && (u.includes("images.weserv.nl") || u.includes("wsrv.nl"))) {
-        const restKeys = ["output","w","h","q","fit","af","n"];
-        const extras = [];
-        for (const k of restKeys) if (qs.has(k)) extras.push(`${k}=${encodeURIComponent(qs.get(k) || "")}`);
-        if (extras.length) u = u + (u.includes("?") ? "&" : "?") + extras.join("&");
-        return u;
-      }
-      // 3) если всё ещё пусто/криво — возьмём «хвост» после img=
-      if (!u) {
+      // 1) из query
+      let u = getParamFrom(location.search, 'img');
+      // 2) если нет — из hash
+      if (!u) u = getParamFrom(location.hash, 'img');
+      // 3) если всё ещё нет — вырезаем вручную после 'img=' до конца
+      if (!u){
         const href = String(location.href);
-        const idx = href.indexOf("img=");
-        if (idx >= 0) {
-          u = decodeURIComponent(href.slice(idx + 4));
-        }
+        const i = href.indexOf('img=');
+        if (i >= 0) u = decodeURIComponent(href.slice(i+4));
       }
-      return u || "";
+      return u || '';
     }
 
+    /* ----------------- Прокси и даунскейл для iOS ----------------- */
     function noScheme(u){
-      try{
-        const url = new URL(u);
-        return url.host + url.pathname + (url.search||"");
-      }catch{ return u.replace(/^https?:\/\//,''); }
+      try{ const url=new URL(u); return url.host + url.pathname + (url.search||''); }
+      catch{ return u.replace(/^https?:\/\//,''); }
+    }
+    function forceWeserv(u){
+      // гарантированно уменьшаем по длинной стороне до 1600, jpeg q=85
+      const base = 'https://images.weserv.nl/?';
+      const core = 'url=' + encodeURIComponent(noScheme(u));
+      const opts = '&output=jpg&w=1600&h=1600&fit=inside&q=85';
+      return base + core + opts;
+    }
+    function normalizeUrl(u){
+      if (!u) return '';
+      if (u.includes('images.weserv.nl') || u.includes('wsrv.nl')){
+        // уже через прокси — принудительно добавим параметры качества/размера
+        const url = new URL(u, location.href);
+        url.searchParams.set('output','jpg');
+        url.searchParams.set('w','1600');
+        url.searchParams.set('h','1600');
+        url.searchParams.set('fit','inside');
+        url.searchParams.set('q','85');
+        return url.toString();
+      }
+      return u;
     }
 
-    function toWeserv(u){
-      const ns = encodeURIComponent(noScheme(u));
-      return `https://images.weserv.nl/?url=${ns}&output=jpg`;
-    }
-
-    function loadWithFallback(originalUrl){
+    function loadWithFallback(raw){
       let triedProxy = false;
-      let timeoutId;
+      let timer;
 
       const tryDirect = () => {
-        clearTimeout(timeoutId);
-        img.src = originalUrl;
-        // если не загрузилось за 2500мс — пробуем прокси
-        timeoutId = setTimeout(() => {
-          if (!triedProxy) { tryProxy(); }
-        }, 2500);
+        clearTimeout(timer);
+        const direct = normalizeUrl(raw);
+        img.src = direct;
+        // если за 2500мс не прогрузилось — пробуем прокси
+        timer = setTimeout(()=>{ if (!triedProxy) tryProxy(); }, 2500);
       };
-
       const tryProxy = () => {
         triedProxy = true;
-        clearTimeout(timeoutId);
-        img.src = toWeserv(originalUrl);
+        clearTimeout(timer);
+        img.src = forceWeserv(raw);
       };
 
       img.onload = () => {
-        clearTimeout(timeoutId);
+        clearTimeout(timer);
         st.natW = img.naturalWidth || img.width;
         st.natH = img.naturalHeight || img.height;
         layoutToImage();
         setAutoFrame();
       };
-
       img.onerror = () => {
-        if (!triedProxy) {
-          tryProxy();
-        } else {
-          showToast("Не удалось загрузить превью изображения");
-        }
+        if (!triedProxy) tryProxy();
+        else showToast('Не удалось загрузить превью изображения');
       };
 
-      showToast("Загружаю превью…", 900);
+      showToast('Загружаю превью…', 900);
       tryDirect();
     }
 
-    /* ---------- Вёрстка/канвас ---------- */
+    /* ----------------- Разметка и канвас ----------------- */
     function layoutToImage(){
       // stage и canvas ровно размером видимой картинки
       const vw = Math.max(1, img.clientWidth);
       const vh = Math.max(1, img.clientHeight);
-      stage.style.width  = vw + "px";
-      stage.style.height = vh + "px";
+      stage.style.width  = vw + 'px';
+      stage.style.height = vh + 'px';
       canvas.width  = vw;
       canvas.height = vh;
-      canvas.style.width  = vw + "px";
-      canvas.style.height = vh + "px";
+      canvas.style.width  = vw + 'px';
+      canvas.style.height = vh + 'px';
       draw();
     }
 
@@ -226,25 +222,25 @@
 
       // затемнение вне многоугольника
       ctx.save();
-      ctx.fillStyle = "rgba(0,0,0,0.35)";
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
       ctx.fillRect(0,0,canvas.width,canvas.height);
-      ctx.globalCompositeOperation = "destination-out";
+      ctx.globalCompositeOperation = 'destination-out';
       ctx.beginPath();
-      st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) });
+      st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y); });
       ctx.closePath(); ctx.fill();
       ctx.restore();
 
       // рамка
       ctx.lineWidth = 2;
-      ctx.strokeStyle = "rgba(49,181,124,0.95)";
+      ctx.strokeStyle = 'rgba(49,181,124,0.95)';
       ctx.beginPath();
-      st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) });
+      st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y); });
       ctx.closePath(); ctx.stroke();
 
       // маркеры
       for (const p of st.pts){
-        ctx.beginPath(); ctx.arc(p.x,p.y,8,0,Math.PI*2); ctx.fillStyle="#31b57c"; ctx.fill();
-        ctx.beginPath(); ctx.arc(p.x,p.y,3,0,Math.PI*2); ctx.fillStyle="#06120c"; ctx.fill();
+        ctx.beginPath(); ctx.arc(p.x,p.y,8,0,Math.PI*2); ctx.fillStyle='#31b57c'; ctx.fill();
+        ctx.beginPath(); ctx.arc(p.x,p.y,3,0,Math.PI*2); ctx.fillStyle='#06120c'; ctx.fill();
       }
     }
 
@@ -257,52 +253,53 @@
       }
       return -1;
     }
-    canvas.addEventListener("pointerdown",(e)=>{
+    canvas.addEventListener('pointerdown',(e)=>{
       const r=canvas.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top;
       dragIndex = hit(x,y);
       if (dragIndex>=0){ e.preventDefault(); canvas.setPointerCapture?.(e.pointerId); }
     },{passive:false});
-    canvas.addEventListener("pointermove",(e)=>{
+    canvas.addEventListener('pointermove',(e)=>{
       if (dragIndex<0) return;
       const r=canvas.getBoundingClientRect();
       let x=e.clientX-r.left, y=e.clientY-r.top;
       x=Math.max(0,Math.min(canvas.width,x)); y=Math.max(0,Math.min(canvas.height,y));
       st.pts[dragIndex].x=x; st.pts[dragIndex].y=y; draw();
     },{passive:true});
-    canvas.addEventListener("pointerup",(e)=>{ dragIndex=-1; canvas.releasePointerCapture?.(e.pointerId); });
+    canvas.addEventListener('pointerup',(e)=>{ dragIndex=-1; canvas.releasePointerCapture?.(e.pointerId); });
 
     // кнопки
-    $("#resetBtn").addEventListener("click",(e)=>{ e.preventDefault(); resetFrame(); });
-    $("#fitBtn").addEventListener("click",(e)=>{ e.preventDefault(); setAutoFrame(); });
-    $("#sendBtn").addEventListener("click",(e)=>{ e.preventDefault(); doSend(); });
+    $('#resetBtn').addEventListener('click',(e)=>{ e.preventDefault(); resetFrame(); });
+    $('#fitBtn').addEventListener('click',(e)=>{ e.preventDefault(); setAutoFrame(); });
+    $('#sendBtn').addEventListener('click',(e)=>{ e.preventDefault(); doSend(); });
 
     function buildPayload(){
       const pts = st.pts.map(p=>[+(p.x.toFixed(2)), +(p.y.toFixed(2))]);
       return { pts, canvas_w:canvas.width, canvas_h:canvas.height, img_w:st.natW, img_h:st.natH, ts:Date.now() };
     }
     function doSend(){
-      if (st.pts.length!==4){ showToast("Нужно поставить 4 точки"); return; }
+      if (st.pts.length!==4){ showToast('Нужно поставить 4 точки'); return; }
       const payload = buildPayload();
       try{
         if (TG && TG.sendData){
-          TG.HapticFeedback?.impactOccurred?.("medium");
+          TG.HapticFeedback?.impactOccurred?.('medium');
           TG.sendData(JSON.stringify(payload));
-          showToast("Отправлено боту");
+          showToast('Отправлено боту');
           setTimeout(()=>{ try{ TG.close(); }catch(e){} }, 800);
-        } else { showToast("Открой через кнопку бота в Telegram"); }
-      }catch(err){ console.error(err); showToast("Ошибка отправки"); }
+        } else { showToast('Открой через кнопку бота в Telegram'); }
+      }catch(err){ console.error(err); showToast('Ошибка отправки'); }
     }
 
-    // загрузка/адаптация
+    // загрузка
     const rawImg = getImgParamRobust();
     if (rawImg) { loadWithFallback(rawImg); }
-    else { showToast("Открой страницу через кнопку в боте"); }
+    else { showToast('Открой страницу через кнопку в боте'); }
 
-    function relayout(){ layoutToImage(); }
-    window.addEventListener("resize", relayout);
-    window.visualViewport && window.visualViewport.addEventListener("resize", relayout);
-    window.addEventListener("orientationchange", relayout);
-    document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) relayout(); });
+    // на любые изменения геометрии — синхронизируем канвас
+    const relayout = () => layoutToImage();
+    window.addEventListener('resize', relayout);
+    window.visualViewport && window.visualViewport.addEventListener('resize', relayout);
+    window.addEventListener('orientationchange', relayout);
+    document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) relayout(); });
   })();
   </script>
 </body>
