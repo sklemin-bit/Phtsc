@@ -1,239 +1,505 @@
-<!doctype html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"/>
-  <title>ScanBot — выбор углов</title>
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <style>
-    :root{
-      --bg:#0b0f14; --fg:#e7eef7; --acc:#31b57c; --warn:#ff5555;
-      --safe: env(safe-area-inset-bottom, 0px);
-      --head-h:48px;
-    }
-    *{box-sizing:border-box}
-    html,body{height:100%}
-    body{
-      margin:0; background:var(--bg); color:var(--fg);
-      font-family:system-ui,-apple-system,"Segoe UI",Roboto,Inter,Arial,sans-serif;
-      min-height:100dvh; display:flex; flex-direction:column;
-    }
-    header{
-      height:var(--head-h); display:flex; align-items:center;
-      padding:0 12px; font-weight:600; opacity:.9; flex:0 0 auto;
-      background:linear-gradient(180deg, rgba(11,15,20,1) 0%, rgba(11,15,20,.85) 100%);
-    }
+# scbot.py — ScanBot v4.0.3-stable
+# ✅ Только кнопка в меню (reply keyboard), без инлайн
+# ✅ Превью в редактор: ?img= (Weserv proxy для Telegram CDN)
+# ✅ Ручная обрезка: масштабирование canvas→оригинал + фиксация EXIF-ориентации
+# ❗ Файл ТОЛЬКО Python (без HTML)
 
-    #wrap{ flex:1 1 auto; display:flex; align-items:center; justify-content:center;
-      padding:8px 10px; overflow:hidden; }
-    #stage{ position:relative; }
-    #img{
-      display:block; max-width:95%; max-height:calc(95vh - var(--head-h) - 90px);
-      width:auto; height:auto; object-fit:contain;
-    }
-    #canvas{ position:absolute; top:0; left:0; touch-action:none; }
+import os
+import re
+import cv2
+import json
+import time
+import numpy as np
+import requests
+from PIL import Image, ImageOps
+from urllib.parse import quote, urlencode
 
-    .hud{
-      flex:0 0 auto; padding:10px 12px calc(10px + var(--safe));
-      background:linear-gradient(180deg, rgba(11,15,20,0) 0%, rgba(11,15,20,.9) 40%, rgba(11,15,20,1) 100%);
-    }
-    .hud-inner{
-      margin:0 auto; width:100%; max-width:720px;
-      display:grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-      gap:10px; align-items:center; justify-items:center;
-    }
-    .btn{
-      appearance:none; border:none; border-radius:12px;
-      padding:12px 14px; width:100%; min-width:0; text-align:center;
-      background:#1b2430; color:var(--fg); font-weight:600; font-size:14px;
-      box-shadow:0 1px 0 rgba(255,255,255,.05) inset, 0 0 0 1px rgba(255,255,255,.04);
-      cursor:pointer;
-    }
-    .btn:active{ transform:translateY(1px) }
-    .btn.primary{ background:var(--acc); color:#06120c }
-    .btn.warn{ background:var(--warn); color:#120606 }
+from telegram import (
+    Update, InputFile, WebAppInfo, KeyboardButton,
+    ReplyKeyboardMarkup, ReplyKeyboardRemove, Message
+)
+from telegram.error import BadRequest
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    ContextTypes, filters
+)
+from telegram.request import HTTPXRequest
 
-    #toast{
-      position:fixed; top:12px; left:50%; transform:translateX(-50%);
-      background:#1b2430; color:#e7eef7; padding:8px 12px; border-radius:8px;
-      font-size:13px; box-shadow:0 6px 18px rgba(0,0,0,.35); display:none; z-index:1000;
-      max-width:90vw; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-    }
-  </style>
-</head>
-<body>
-  <div id="toast"></div>
-  <header>Выбор углов</header>
+# =================== CONFIG ===================
+TOKEN = os.getenv("SCANBOT_TOKEN") or "7545863960:AAGRHjbGkVSEKlPWkMI0kBYyajceLm164cg"
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "181726741"))
+WEBAPP_URL = os.getenv("WEBAPP_URL", "https://sklemin-bit.github.io/Phtsc/").strip()
 
-  <div id="wrap">
-    <div id="stage">
-      <img id="img" alt="preview"/>
-      <canvas id="canvas"></canvas>
-    </div>
-  </div>
+IMG_DELIVERY = os.getenv("WEBAPP_IMG_METHOD", "TELEGRAM_CDN").upper()   # TELEGRAM_CDN | TELEGRAPH
+IMG_PROXY    = os.getenv("WEBAPP_IMG_PROXY", "WESERV").upper()          # WESERV | NONE
 
-  <div class="hud">
-    <div class="hud-inner">
-      <button class="btn" id="resetBtn" title="Сбросить точки">Сбросить</button>
-      <button class="btn" id="fitBtn" title="Вписать по краям">Авто-рамка</button>
-      <button class="btn primary" id="sendBtn">Отправить</button>
-    </div>
-  </div>
+TG_BOTAPI_URL = os.getenv("TG_BOTAPI_URL", "https://api.telegram.org").strip()
+TG_PROXY_URL  = os.getenv("TG_PROXY_URL", "").strip()
 
-  <script>
-  ;(() => {
-    const $ = s => document.querySelector(s);
-    const img = $("#img"), canvas = $("#canvas"), ctx = canvas.getContext("2d",{alpha:true});
-    const toast=$("#toast");
-    const TG = window.Telegram?.WebApp;
+TMP = "tmp_scanbot_v4_0_3"
+os.makedirs(TMP, exist_ok=True)
 
-    try { TG?.setBackgroundColor("#0b0f14"); TG?.setHeaderColor("#0b0f14"); TG?.expand(); TG?.ready(); TG?.MainButton?.hide(); } catch(e){}
+MAX_IMAGE_SIDE = 2500
+MAX_TELEGRAM_SIZE = 9_500_000
+TELEGRAPH_MAX_BYTES = 4_800_000
 
-    const showToast=(s,ms=1400)=>{ toast.textContent=s; toast.style.display="block"; setTimeout(()=>toast.style.display="none",ms); };
+# =================== УТИЛИТЫ ===================
+def cleanup_tmp(max_age_sec=3600):
+    now = time.time()
+    for name in os.listdir(TMP):
+        path = os.path.join(TMP, name)
+        try:
+            if os.path.isfile(path) and now - os.path.getmtime(path) > max_age_sec:
+                os.remove(path)
+        except Exception:
+            pass
 
-    const st = { natW:0, natH:0, pts:[] };
+def reencode_baseline_jpeg(src_path: str,
+                           out_path: str | None = None,
+                           max_side: int = 2500,
+                           quality: int = 85) -> str:
+    out_path = out_path or (src_path.rsplit('.', 1)[0] + "_safe.jpg")
+    with Image.open(src_path) as im:
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        w, h = im.size
+        scale = min(1.0, max_side / max(w, h))
+        if scale < 1.0:
+            im = im.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        im.save(out_path, format="JPEG", quality=quality, optimize=True, progressive=False, subsampling="4:2:0")
+    return out_path
 
-    function getParamFrom(str, key){
-      const re = new RegExp('(?:[?&#])' + key + '=([^#&]+)');
-      const m = re.exec(str);
-      return m ? decodeURIComponent(m[1]) : null;
-    }
-    function getImgParam(){
-      const href = String(location.href);
-      return getParamFrom(location.search,'img')
-          || getParamFrom(location.hash,'img')
-          || (()=>{ const i=href.indexOf('img='); return i>=0? decodeURIComponent(href.slice(i+4)) : ''; })();
-    }
+def ensure_under_size(path: str, target_bytes: int, min_quality: int = 60, min_side: int = 640) -> str:
+    if os.path.getsize(path) <= target_bytes:
+        return path
+    quality = 85
+    side = 2000
+    tmp = path
+    for _ in range(7):
+        quality = max(min_quality, quality - 6)
+        side = max(min_side, int(side * 0.85))
+        tmp = reencode_baseline_jpeg(path, out_path=path, max_side=side, quality=quality)
+        if os.path.getsize(tmp) <= target_bytes:
+            return tmp
+    return tmp
 
-    // Weserv proxy
-    function noScheme(u){
-      try{ const url=new URL(u); return url.host + url.pathname + (url.search||''); }
-      catch{ return (u||'').replace(/^https?:\/\//,''); }
-    }
-    function weserv(u, w=1600){
-      const core='url='+encodeURIComponent(noScheme(u));
-      return `https://images.weserv.nl/?${core}&output=jpg&w=${w}&h=${w}&fit=inside&q=85&cb=${Date.now()}`;
-    }
-    function normalize(u){
-      if (!u) return '';
-      if (u.includes('images.weserv.nl') || u.includes('wsrv.nl')){
-        const url = new URL(u, location.href);
-        url.searchParams.set('output','jpg');
-        url.searchParams.set('w','1600'); url.searchParams.set('h','1600');
-        url.searchParams.set('fit','inside'); url.searchParams.set('q','85');
-        return url.toString();
-      }
-      return u;
-    }
+def save_jpg(img, path, q=95):
+    cv2.imwrite(path, img, [int(cv2.IMWRITE_JPEG_QUALITY), q])
+    if os.path.getsize(path) > MAX_TELEGRAM_SIZE:
+        ensure_under_size(path, MAX_TELEGRAM_SIZE)
 
-    function loadWithFallback(raw){
-      let fellBack = false;
-      let timer;
+def pil_preview_jpeg(src_path: str, max_side: int = 1280, quality: int = 80) -> str | None:
+    try:
+        with Image.open(src_path) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            w, h = im.size
+            scale = min(1.0, max_side / max(w, h))
+            if scale < 1.0:
+                im = im.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            out_path = src_path.rsplit('.', 1)[0] + "_prev.jpg"
+            im.save(out_path, format="JPEG", quality=quality, optimize=True, progressive=False)
+        ensure_under_size(out_path, TELEGRAPH_MAX_BYTES, min_quality=60, min_side=640)
+        return out_path
+    except Exception as e:
+        print("pil_preview_jpeg error:", e)
+        return None
 
-      const tryDirect = () => {
-        clearTimeout(timer);
-        img.src = normalize(raw);
-        timer = setTimeout(() => {
-          if (!fellBack) { fellBack = true; img.src = weserv(raw, 1600); }
-        }, 1500);
-      };
+def upload_to_telegraph(img_path: str) -> str | None:
+    url = "https://telegra.ph/upload"
+    def _try(file_path: str) -> str | None:
+        try:
+            with open(file_path, "rb") as f:
+                files = {"file": ("image.jpg", f, "image/jpeg")}
+                r = requests.post(url, files=files, timeout=30)
+            if r.ok:
+                data = r.json()
+                if isinstance(data, list) and data and "src" in data[0]:
+                    return "https://telegra.ph" + data[0]["src"]
+            print("telegraph fail:", r.status_code, r.text[:200])
+            return None
+        except Exception as e:
+            print("telegraph error:", e)
+            return None
+    if os.path.getsize(img_path) <= TELEGRAPH_MAX_BYTES:
+        out = _try(img_path)
+        if out: return out
+    prev = pil_preview_jpeg(img_path, max_side=1280, quality=80)
+    if prev and os.path.getsize(prev) <= TELEGRAPH_MAX_BYTES:
+        out = _try(prev)
+        if out: return out
+    for side, q in [(1100, 78), (900, 72), (720, 68)]:
+        try_path = reencode_baseline_jpeg(img_path, out_path=prev or img_path, max_side=side, quality=q)
+        ensure_under_size(try_path, TELEGRAPH_MAX_BYTES, min_quality=60, min_side=640)
+        out = _try(try_path)
+        if out: return out
+    return None
 
-      img.onload = () => {
-        clearTimeout(timer);
-        st.natW = img.naturalWidth || img.width;
-        st.natH = img.naturalHeight || img.height;
-        layoutToImage();
-        setAutoFrame();
-      };
-      img.onerror = () => {
-        if (!fellBack) { fellBack = true; img.src = weserv(raw, 1600); }
-        else showToast('Не удалось загрузить превью изображения');
-      };
+# -------- Telegram CDN helpers --------
+def build_telegram_file_url(file_path: str) -> str:
+    if not file_path:
+        return ""
+    if file_path.startswith("http://") or file_path.startswith("https://"):
+        return file_path
+    return f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
 
-      showToast('Загружаю превью…', 900);
-      tryDirect();
-    }
+def mask_token(url: str) -> str:
+    return re.sub(r"(https://api\.telegram\.org/file/bot)[^/]+", r"\1<SECRET>", url or "")
 
-    function layoutToImage(){
-      const vw = Math.max(1, Math.round(img.clientWidth));
-      const vh = Math.max(1, Math.round(img.clientHeight));
-      const stage = img.parentElement;
-      stage.style.width = vw + 'px';
-      stage.style.height = vh + 'px';
-      if (canvas.width !== vw) canvas.width = vw;
-      if (canvas.height !== vh) canvas.height = vh;
-      canvas.style.width = vw + 'px';
-      canvas.style.height = vh + 'px';
-      draw();
-    }
+async def get_cdn_url_from_file_id(context: ContextTypes.DEFAULT_TYPE, file_id: str) -> str | None:
+    try:
+        f = await context.bot.get_file(file_id)
+        fp = getattr(f, "file_path", None)
+        if not fp:
+            return None
+        return build_telegram_file_url(fp)
+    except Exception as e:
+        print("get_cdn_url_from_file_id error:", e)
+        return None
 
-    function setAutoFrame(){
-      const w=canvas.width, h=canvas.height;
-      st.pts=[{x:.08*w,y:.08*h},{x:.92*w,y:.08*h},{x:.92*w,y:.92*h},{x:.08*w,y:.92*h}];
-      draw();
-    }
-    function resetFrame(){
-      const w=canvas.width, h=canvas.height;
-      st.pts=[{x:.05*w,y:.05*h},{x:.95*w,y:.05*h},{x:.95*w,y:.95*h},{x:.05*w,y:.95*h}];
-      draw();
-    }
+# -------- CORS proxy wrapper --------
+def wrap_with_proxy(raw_url: str) -> str:
+    if not raw_url or IMG_PROXY == "NONE":
+        return raw_url
+    no_scheme = raw_url.replace("https://", "").replace("http://", "")
+    return f"https://images.weserv.nl/?{urlencode({'url': no_scheme, 'output': 'jpg', 'w': '1600', 'h': '1600', 'fit': 'inside', 'q': '85', 'cb': str(int(time.time()*1000))})}"
 
-    function draw(){
-      const w=canvas.width,h=canvas.height;
-      ctx.clearRect(0,0,w,h);
-      if (st.pts.length!==4) return;
+# -------- build editor URL (query ?img=...) --------
+def build_editor_url(public_url: str | None) -> str:
+    if not WEBAPP_URL:
+        return ""
+    if public_url:
+        proxied = wrap_with_proxy(public_url)
+        return f"{WEBAPP_URL}?img={quote(proxied, safe=':/?&=')}"
+    return WEBAPP_URL
 
-      ctx.save();
-      ctx.fillStyle="rgba(0,0,0,.35)"; ctx.fillRect(0,0,w,h);
-      ctx.globalCompositeOperation="destination-out";
-      ctx.beginPath(); st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) }); ctx.closePath(); ctx.fill();
-      ctx.restore();
+# ===== ТОЛЬКО МЕНЮ (reply-keyboard) =====
+def make_reply_editor_keyboard(public_url: str | None) -> ReplyKeyboardMarkup | None:
+    url = build_editor_url(public_url)
+    if not url:
+        return None
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton(text="🖱️ Открыть редактор точек", web_app=WebAppInfo(url=url))]],
+        resize_keyboard=True, one_time_keyboard=False
+    )
 
-      ctx.lineWidth=2; ctx.strokeStyle="rgba(49,181,124,.95)";
-      ctx.beginPath(); st.pts.forEach((p,i)=>{ i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y) }); ctx.closePath(); ctx.stroke();
+async def ensure_menu(context: ContextTypes.DEFAULT_TYPE, chat_id: int, public_url: str | None):
+    kb = make_reply_editor_keyboard(public_url)
+    if kb:
+        await context.bot.send_message(chat_id, "Меню открыто: кнопка ниже ⬇️", reply_markup=kb)
 
-      for (const p of st.pts){
-        ctx.beginPath(); ctx.arc(p.x,p.y,8,0,Math.PI*2); ctx.fillStyle="#31b57c"; ctx.fill();
-        ctx.beginPath(); ctx.arc(p.x,p.y,3,0,Math.PI*2); ctx.fillStyle="#06120c"; ctx.fill();
-      }
-    }
+# =================== ЗАГРУЗКА ИЗОБРАЖЕНИЙ С УЧЁТОМ EXIF ===================
+def read_image_bgr_oriented(path: str):
+    try:
+        with Image.open(path) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            arr = np.array(im)
+        return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+    except Exception as e:
+        print("read_image_bgr_oriented error:", e)
+        return cv2.imread(path)  # последний шанс (без ориентации)
 
-    let dragIndex=-1;
-    function hit(x,y){ for(let i=0;i<st.pts.length;i++){ const p=st.pts[i],dx=p.x-x,dy=p.y-y; if(dx*dx+dy*dy<=169) return i; } return -1; }
-    canvas.addEventListener("pointerdown",(e)=>{ const r=canvas.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top; dragIndex=hit(x,y); if(dragIndex>=0){ e.preventDefault(); canvas.setPointerCapture?.(e.pointerId);} },{passive:false});
-    canvas.addEventListener("pointermove",(e)=>{ if(dragIndex<0)return; const r=canvas.getBoundingClientRect(); let x=e.clientX-r.left,y=e.clientY-r.top; x=Math.max(0,Math.min(canvas.width,x)); y=Math.max(0,Math.min(canvas.height,y)); st.pts[dragIndex].x=x; st.pts[dragIndex].y=y; draw(); },{passive:true});
-    canvas.addEventListener("pointerup",(e)=>{ dragIndex=-1; canvas.releasePointerCapture?.(e.pointerId); });
+# =================== СКАН ===================
+def enhance_scan(img):
+    if img is None:
+        raise ValueError("Empty image passed to enhance_scan")
+    if img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (0, 0), 3)
+    div = cv2.divide(gray, blur, scale=255)
+    norm = cv2.normalize(div, None, 0, 255, cv2.NORM_MINMAX)
+    sharp = cv2.addWeighted(norm, 1.4, cv2.GaussianBlur(norm, (0, 0), 1.0), -0.4, 0)
+    bw = cv2.adaptiveThreshold(sharp.astype(np.uint8), 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 21, 7)
+    bw = cv2.medianBlur(bw, 3)
+    return cv2.cvtColor(bw, cv2.COLOR_GRAY2BGR)
 
-    $("#resetBtn").addEventListener("click",(e)=>{ e.preventDefault(); resetFrame(); });
-    $("#fitBtn").addEventListener("click",(e)=>{ e.preventDefault(); setAutoFrame(); });
-    $("#sendBtn").addEventListener("click",(e)=>{ e.preventDefault(); doSend(); });
+# =================== ОТПРАВКА ===================
+async def send_image_safe(context: ContextTypes.DEFAULT_TYPE, chat_id: int, path: str,
+                          caption: str | None = None) -> Message:
+    abspath = os.path.abspath(path)
+    try:
+        with open(abspath, "rb") as f:
+            return await context.bot.send_photo(chat_id=chat_id, photo=InputFile(f, filename="scan.jpg"),
+                                                caption=caption)
+    except BadRequest as e:
+        if "Image_process_failed" not in str(e):
+            raise
+    safe_path = reencode_baseline_jpeg(abspath, out_path=abspath, max_side=2500, quality=85)
+    try:
+        with open(safe_path, "rb") as f:
+            return await context.bot.send_photo(chat_id=chat_id, photo=InputFile(f, filename="scan.jpg"),
+                                                caption=caption)
+    except BadRequest as e2:
+        if "Image_process_failed" not in str(e2):
+            raise
+    with open(safe_path, "rb") as f:
+        return await context.bot.send_document(chat_id=chat_id, document=InputFile(f, filename="scan.jpg"),
+                                               caption=caption)
 
-    function buildPayload(){
-      const pts = st.pts.map(p=>[+(p.x.toFixed(2)), +(p.y.toFixed(2))]);
-      return { pts, canvas_w:canvas.width, canvas_h:canvas.height, img_w:st.natW, img_h:st.natH, ts:Date.now() };
-    }
-    function doSend(){
-      if (st.pts.length!==4){ showToast("Нужно поставить 4 точки"); return; }
-      const payload = buildPayload();
-      try{
-        if (TG?.sendData){
-          TG.HapticFeedback?.impactOccurred?.("medium");
-          TG.sendData(JSON.stringify(payload));
-          showToast("Отправлено боту");
-          setTimeout(()=>{ try{ TG.close(); }catch(e){} }, 800);
-        } else { showToast("Открой через кнопку бота в Telegram"); }
-      }catch(err){ console.error(err); showToast("Ошибка отправки"); }
-    }
+# =================== ПАРСЕР ТОЧЕК ===================
+def _to_float(x):
+    try:
+        return float(x)
+    except:
+        return None
 
-    const raw = getImgParam();
-    if (raw) loadWithFallback(raw); else showToast("Открой страницу через кнопку в боте");
+def parse_points(payload: dict):
+    if not isinstance(payload, dict):
+        return None
+    for key in ["pts", "points", "corners", "quad"]:
+        if key in payload:
+            data = payload[key]
+            break
+    else:
+        return None
 
-    const relayout = () => layoutToImage();
-    window.addEventListener("resize", relayout);
-    window.visualViewport?.addEventListener("resize", relayout);
-    window.addEventListener("orientationchange", relayout);
-    document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) relayout(); });
-  })();
-  </script>
-</body>
-</html>
+    pts = []
+    if isinstance(data, list):
+        if len(data) == 8 and all(isinstance(v, (int, float, str)) for v in data):
+            it = iter(data)
+            for x, y in zip(it, it):
+                fx, fy = _to_float(x), _to_float(y)
+                if fx is None or fy is None:
+                    return None
+                pts.append((fx, fy))
+        else:
+            for p in data:
+                if isinstance(p, (list, tuple)) and len(p) == 2:
+                    fx, fy = _to_float(p[0]), _to_float(p[1])
+                    if fx is None or fy is None:
+                        return None
+                    pts.append((fx, fy))
+                elif isinstance(p, dict) and "x" in p and "y" in p:
+                    fx, fy = _to_float(p["x"]), _to_float(p["y"])
+                    if fx is None or fy is None:
+                        return None
+                    pts.append((fx, fy))
+                else:
+                    return None
+    elif isinstance(data, dict):
+        for k in ["tl", "tr", "br", "bl"]:
+            if k not in data or not isinstance(data[k], (list, tuple)) or len(data[k]) != 2:
+                return None
+            fx, fy = _to_float(data[k][0]), _to_float(data[k][1])
+            if fx is None or fy is None:
+                return None
+            pts.append((fx, fy))
+    else:
+        return None
+
+    if len(pts) != 4:
+        return None
+    return pts
+
+# =================== ОБРАБОТКА web_app_data ===================
+async def webapp_points_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    wad = getattr(msg, "web_app_data", None)
+    if not wad or not wad.data:
+        return
+
+    chat_id = update.effective_chat.id
+    print(f"[RX] web_app_data from chat {chat_id}: {len(wad.data)} bytes")
+
+    try:
+        payload = json.loads(wad.data)
+    except Exception:
+        await context.bot.send_message(chat_id, "Ошибка: некорректный JSON от редактора.", reply_markup=ReplyKeyboardRemove())
+        await ensure_menu(context, chat_id, context.user_data.get("public_url"))
+        return
+
+    pts_raw = parse_points(payload)
+    if not pts_raw:
+        await context.bot.send_message(chat_id, "Ошибка: не нашёл точки. Ожидаю { pts: [[x,y],[x,y],[x,y],[x,y]] }")
+        await ensure_menu(context, chat_id, context.user_data.get("public_url"))
+        return
+
+    # --- масштабирование canvas → оригинал (с фолбэками) ---
+    def _f(v):
+        try: return float(v)
+        except: return 0.0
+    cw = _f(payload.get("canvas_w") or payload.get("cw") or 0)
+    ch = _f(payload.get("canvas_h") or payload.get("ch") or 0)
+    iw = _f(payload.get("img_w")    or payload.get("iw") or 0)
+    ih = _f(payload.get("img_h")    or payload.get("ih") or 0)
+    if cw <= 0 or ch <= 0:
+        cw, ch = iw, ih
+    if cw <= 0 or ch <= 0:
+        maxx = max(p[0] for p in pts_raw)
+        maxy = max(p[1] for p in pts_raw)
+        cw = max(1.0, maxx)
+        ch = max(1.0, maxy)
+
+    await context.bot.send_message(chat_id, "📌 Получил точки, обрабатываю…")
+
+    orig = context.user_data.get("orig_image")
+    if not orig or not os.path.exists(orig):
+        await context.bot.send_message(chat_id, "Оригинал не найден — отправь фото ещё раз.")
+        await ensure_menu(context, chat_id, context.user_data.get("public_url"))
+        return
+
+    img = read_image_bgr_oriented(orig)  # ← учитываем EXIF ориентацию
+    if img is None:
+        await context.bot.send_message(chat_id, "Ошибка: не удалось прочитать изображение.")
+        await ensure_menu(context, chat_id, context.user_data.get("public_url"))
+        return
+
+    H, W = img.shape[:2]
+    sx = W / cw
+    sy = H / ch
+    scaled = np.array([(x * sx, y * sy) for (x, y) in pts_raw], dtype=np.float32)
+
+    # упорядочим углы
+    rect = scaled
+    s = rect.sum(axis=1)
+    diff = np.diff(rect, axis=1)
+    ordered = np.zeros((4, 2), dtype=np.float32)
+    ordered[0] = rect[np.argmin(s)]    # tl
+    ordered[2] = rect[np.argmax(s)]    # br
+    ordered[1] = rect[np.argmin(diff)] # tr
+    ordered[3] = rect[np.argmax(diff)] # bl
+
+    (tl, tr, br, bl) = ordered
+    widthA = np.linalg.norm(br - bl)
+    widthB = np.linalg.norm(tr - tl)
+    heightA = np.linalg.norm(tr - br)
+    heightB = np.linalg.norm(tl - bl)
+    maxW = max(10, int(max(widthA, widthB)))
+    maxH = max(10, int(max(heightA, heightB)))
+
+    dst = np.array([[0, 0], [maxW - 1, 0], [maxW - 1, maxH - 1], [0, maxH - 1]], dtype=np.float32)
+    M = cv2.getPerspectiveTransform(ordered, dst)
+    warped = cv2.warpPerspective(img, M, (maxW, maxH), flags=cv2.INTER_CUBIC)
+    result = enhance_scan(warped)
+
+    out_path = os.path.join(TMP, f"{chat_id}_manual.jpg")
+    save_jpg(result, out_path, q=95)
+    sent = await send_image_safe(context, chat_id, out_path)
+
+    # обновим превью для меню
+    public_url = context.user_data.get("public_url")
+    if IMG_DELIVERY == "TELEGRAM_CDN":
+        try:
+            if getattr(sent, "photo", None) and len(sent.photo) > 0:
+                file_id = sent.photo[-1].file_id
+                public_url = await get_cdn_url_from_file_id(context, file_id)
+            elif getattr(sent, "document", None):
+                file_id = sent.document.file_id
+                public_url = await get_cdn_url_from_file_id(context, file_id)
+        except Exception as e:
+            print("cdn url after manual error:", e)
+    else:
+        try:
+            prev = pil_preview_jpeg(out_path, max_side=1280, quality=80)
+            public_url = upload_to_telegraph(prev or out_path)
+        except Exception as e:
+            print("telegraph reupload after manual error:", e)
+
+    context.user_data["public_url"] = public_url
+    print("[webapp] WEBAPP_URL :", WEBAPP_URL)
+    print("[webapp] public_url :", mask_token(public_url or ""))
+    print(f"[webapp] scale sx={sx:.4f} sy={sy:.4f} | canvas=({cw:.1f},{ch:.1f}) orig=({W},{H})")
+
+    await context.bot.send_message(chat_id, "Готово! Если нужно — открой редактор через кнопку в меню ниже.")
+    await ensure_menu(context, chat_id, public_url)
+
+# =================== ОСНОВНЫЕ ХЕНДЛЕРЫ ===================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("👋 Привет! Отправь фото документа — я сделаю читаемый скан.")
+    await ensure_menu(context, update.effective_chat.id, context.user_data.get("public_url"))
+
+async def editor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await ensure_menu(context, update.effective_chat.id, context.user_data.get("public_url"))
+    await update.message.reply_text("Открой редактор через кнопку в меню ниже.")
+
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cleanup_tmp()
+    chat_id = update.effective_chat.id
+    await update.message.reply_text("📄 Обрабатываю фото...")
+
+    tgphoto = update.message.photo[-1]
+    tgfile = await tgphoto.get_file()
+    in_path = os.path.join(TMP, f"{chat_id}_orig.jpg")
+    await tgfile.download_to_drive(in_path)
+
+    public_url = None
+    if IMG_DELIVERY == "TELEGRAM_CDN":
+        try:
+            fp = getattr(tgfile, "file_path", None)
+            public_url = build_telegram_file_url(fp or "")
+        except Exception as e:
+            print("build cdn url for original error:", e)
+    else:
+        try:
+            prev_path = pil_preview_jpeg(in_path, max_side=1280, quality=80)
+            public_url = upload_to_telegraph(prev_path or in_path)
+        except Exception as e:
+            print("telegraph upload error:", e)
+
+    img = read_image_bgr_oriented(in_path)  # ← учитываем EXIF
+    if img is None:
+        await update.message.reply_text("Ошибка: не удалось загрузить изображение.")
+        await ensure_menu(context, chat_id, public_url)
+        return
+
+    h, w = img.shape[:2]
+    scale = min(1.0, MAX_IMAGE_SIDE / max(h, w))
+    if scale < 1.0:
+        img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+
+    result = enhance_scan(img)
+    out_path = os.path.join(TMP, f"{chat_id}_scan.jpg")
+    save_jpg(result, out_path)
+
+    context.user_data["orig_image"] = in_path
+    context.user_data["public_url"] = public_url
+    print("WEBAPP_URL :", WEBAPP_URL)
+    print("public_url :", mask_token(public_url or ""))
+
+    caption = "Готово! Для точной обрезки нажми кнопку в меню ниже и отметь углы."
+    await send_image_safe(context, chat_id, out_path, caption=caption)
+    await ensure_menu(context, chat_id, public_url)
+
+# ---- МОНИТОР (диагностика) ----
+async def monitor_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if msg and getattr(msg, "web_app_data", None) and getattr(msg.web_app_data, "data", None):
+        print(f"[MON] caught web_app_data in monitor_all, bytes={len(msg.web_app_data.data)}")
+
+# =================== ЗАПУСК ===================
+def main():
+    if not TOKEN:
+        print("❌ Ошибка: отсутствует SCANBOT_TOKEN в переменных окружения.")
+        return
+    if not WEBAPP_URL.startswith("https://"):
+        print("⚠️ WEBAPP_URL должен быть https. Сейчас:", WEBAPP_URL)
+
+    request = HTTPXRequest(
+        http_version="1.1",
+        read_timeout=40.0, write_timeout=40.0, connect_timeout=40.0, pool_timeout=40.0,
+        proxy_url=TG_PROXY_URL or None
+    )
+    base_url = TG_BOTAPI_URL.rstrip("/")
+
+    builder = (ApplicationBuilder()
+               .token(TOKEN)
+               .base_url(f"{base_url}/bot")
+               .request(request))
+    app = builder.build()
+
+    # web_app_data — первым
+    app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, webapp_points_handler), group=0)
+    app.add_handler(MessageHandler(filters.ALL, monitor_all), group=1)
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("editor", editor))
+    app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
+
+    print("🚀 ScanBot v4.0.3-stable запущен")
+    print("WEBAPP_URL    :", WEBAPP_URL)
+    print("IMG_DELIVERY  :", IMG_DELIVERY, " | IMG_PROXY:", IMG_PROXY)
+    print("TG_BOTAPI_URL :", base_url)
+    print("TG_PROXY_URL  :", "(set)" if TG_PROXY_URL else "(none)")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
