@@ -1,224 +1,132 @@
 <!doctype html>
-<html lang="ru">
+<html>
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Выдели края документа</title>
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>ScanBot Editor</title>
   <style>
-    :root {
-      --bg:#0b0b0c; --fg:#e8e8ea; --muted:#9aa0a6; --accent:#4da3ff; --good:#2ecc71; --warn:#ffcc00; --bad:#ff5757;
-      --panel:#16181b; --line:#2a2e34; --shadow:0 8px 28px rgba(0,0,0,.35);
-    }
-    body { margin:0; font:15px/1.45 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:var(--bg); color:var(--fg); }
-    .wrap { min-height:100svh; display:flex; flex-direction:column; gap:12px; padding:16px; padding-bottom:calc(16px + env(safe-area-inset-bottom)); }
-    header { text-align:center; font-weight:700; font-size:18px; }
-    #stage { display:grid; place-items:center; background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:10px; box-shadow:var(--shadow); }
-    canvas { max-width:100%; height:auto; border-radius:12px; background:#111; touch-action:manipulation; }
-    .controls { display:flex; gap:10px; justify-content:center; align-items:center; flex-wrap:wrap; }
-    button { appearance:none; border:1px solid var(--line); background:#11161c; color:var(--fg); padding:10px 14px; border-radius:14px; font-weight:600; cursor:pointer; box-shadow:var(--shadow); }
-    button:hover { border-color:#3a3f47; }
-    .ghost { opacity:.7 }
-    .ok { background:#12361f; border-color:#1e6b3b; }
-    .warn { background:#3a2f10; border-color:#876d1c; }
-    .accent { background:#0e2236; border-color:#244c79; }
-    .row { display:flex; justify-content:center; gap:12px; align-items:center; color:var(--muted); }
-    .hint { text-align:center; font-size:13px; color:var(--muted); }
-    .badge { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border-radius:50%; background:var(--accent); color:#fff; font-size:12px; font-weight:700; margin-left:6px; }
+    body { margin:0; background:#000; overflow:hidden; touch-action:none; }
+    canvas { display:block; margin:0 auto; }
+    #ui { position:fixed; bottom:20px; left:0; width:100%; display:flex; justify-content:center; gap:15px; pointer-events:none; }
+    button { pointer-events:auto; padding:12px 24px; border:none; border-radius:12px; font-weight:bold; font-size:16px; box-shadow:0 4px 12px rgba(0,0,0,0.5); cursor:pointer; }
+    #btn-reset { background:#444; color:#fff; }
+    #btn-done { background:#2563eb; color:#fff; }
   </style>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
-  <div class="wrap">
-    <header>Выдели края документа</header>
-
-    <div id="stage">
-      <canvas id="cv" width="10" height="10"></canvas>
-    </div>
-
-    <div class="controls">
-      <button id="btnReset" class="warn">Сбросить</button>
-      <button id="btnAuto" class="accent">Авто‑рамка</button>
-      <button id="btnSend" class="ok">Отправить</button>
-    </div>
-
-    <div class="row">
-      <div class="hint">Кликай по углам в порядке: TL → TR → BR → BL <span class="badge" id="count">0</span></div>
-    </div>
+  <canvas id="c"></canvas>
+  <div id="ui">
+    <button id="btn-reset">Сброс</button>
+    <button id="btn-done">Готово</button>
   </div>
 
 <script>
-(function(){
-  const tg = window.Telegram?.WebApp; if (tg) { tg.expand(); tg.enableClosingConfirmation(); }
+const tg = window.Telegram.WebApp;
+tg.expand();
 
-  const urlParams = new URLSearchParams(location.search);
-  const imgURL = urlParams.get('img');
-  const clickMode = (urlParams.get('mode')||'click') === 'click';
-  const hint = (urlParams.get('hint')||'tl-tr-br-bl').toLowerCase();
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+const img = new Image();
+const pts = [];
 
-  const canvas = document.getElementById('cv');
-  const ctx = canvas.getContext('2d');
-  const countBadge = document.getElementById('count');
-  const btnReset = document.getElementById('btnReset');
-  const btnAuto = document.getElementById('btnAuto');
-  const btnSend = document.getElementById('btnSend');
+// Парсим URL
+const urlParams = new URLSearchParams(location.search);
+const src = urlParams.get('img');
 
-  /** state */
-  const state = {
-    img: new Image(),
-    naturalW: 0,
-    naturalH: 0,
-    viewW: 0,
-    viewH: 0,
-    points: [], // in canvas coords (display space)
-  };
-  state.img.crossOrigin = 'anonymous';
+let scale = 1, dx = 0, dy = 0;
 
-  function fitToContainer(nw, nh, maxW, maxH) {
-    const ar = nw / nh;
-    let w = maxW, h = Math.round(w / ar);
-    if (h > maxH) { h = maxH; w = Math.round(h * ar); }
-    return { w, h };
+img.crossOrigin = "anonymous";
+img.onload = () => {
+  resize();
+  draw();
+};
+if(src) img.src = src;
+
+function resize() {
+  if(!img.naturalWidth) return;
+  const maxW = window.innerWidth;
+  const maxH = window.innerHeight;
+  
+  // Вписываем картинку в экран (contain)
+  const scW = maxW / img.naturalWidth;
+  const scH = maxH / img.naturalHeight;
+  scale = Math.min(scW, scH);
+  
+  cvs.width = window.innerWidth;
+  cvs.height = window.innerHeight;
+  
+  // Центрируем
+  dx = (cvs.width - img.naturalWidth * scale) / 2;
+  dy = (cvs.height - img.naturalHeight * scale) / 2;
+  draw();
+}
+
+window.onresize = resize;
+
+function draw() {
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0,0,cvs.width,cvs.height);
+  
+  if(img.naturalWidth) {
+    ctx.drawImage(img, dx, dy, img.naturalWidth*scale, img.naturalHeight*scale);
   }
-
-  function draw() {
-    const {img, viewW, viewH, points} = state;
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-    ctx.drawImage(img, 0, 0, viewW, viewH);
-    // overlay points and poly
-    if (points.length) {
-      // poly
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = 'rgba(77,163,255,0.9)';
-      ctx.fillStyle = 'rgba(77,163,255,0.15)';
+  
+  // Рисуем полигон
+  if(pts.length > 0) {
+    ctx.strokeStyle = "#0f0";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x * scale + dx, pts[0].y * scale + dy);
+    for(let i=1; i<pts.length; i++) {
+      ctx.lineTo(pts[i].x * scale + dx, pts[i].y * scale + dy);
+    }
+    if(pts.length === 4) ctx.closePath();
+    ctx.stroke();
+    
+    // Рисуем точки
+    ctx.fillStyle = "#fff";
+    pts.forEach(p => {
       ctx.beginPath();
-      ctx.moveTo(points[0].x, points[0].y);
-      for (let i=1;i<points.length;i++) ctx.lineTo(points[i].x, points[i].y);
-      if (points.length === 4) ctx.closePath();
-      ctx.stroke();
-      if (points.length === 4) ctx.fill();
-      // points
-      points.forEach((p,i)=>{
-        ctx.beginPath();
-        ctx.fillStyle = '#4da3ff';
-        ctx.arc(p.x, p.y, 6, 0, Math.PI*2);
-        ctx.fill();
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 12px system-ui';
-        ctx.textAlign='center';
-        ctx.textBaseline='middle';
-        ctx.fillText(String(i+1), p.x, p.y);
-      });
-    }
-    countBadge.textContent = String(points.length);
+      ctx.arc(p.x * scale + dx, p.y * scale + dy, 6, 0, Math.PI*2);
+      ctx.fill();
+    });
   }
+}
 
-  function setCanvasSize() {
-    // Stage inner size
-    const stage = document.getElementById('stage');
-    const maxW = Math.min(stage.clientWidth - 20, window.innerWidth - 32);
-    const maxH = Math.min(Math.round(window.innerHeight*0.72), 900);
-    const fit = fitToContainer(state.naturalW, state.naturalH, maxW, maxH);
-    canvas.width = state.viewW = fit.w;
-    canvas.height = state.viewH = fit.h;
+// Клик по канвасу
+cvs.addEventListener('pointerdown', e => {
+  if(pts.length >= 4) return;
+  
+  const rect = cvs.getBoundingClientRect();
+  const x = (e.clientX - rect.left - dx) / scale;
+  const y = (e.clientY - rect.top - dy) / scale;
+  
+  // Сохраняем координаты относительно размера картинки в браузере
+  pts.push({x, y});
+  draw();
+});
+
+document.getElementById('btn-reset').onclick = () => {
+  pts.length = 0;
+  draw();
+};
+
+document.getElementById('btn-done').onclick = () => {
+  if(pts.length !== 4) {
+    tg.showPopup({message: "Выделите 4 угла!"});
+    return;
   }
-
-  function imageLoaded() {
-    state.naturalW = state.img.naturalWidth;
-    state.naturalH = state.img.naturalHeight;
-    setCanvasSize();
-    draw();
-  }
-
-  function reset() { state.points = []; draw(); }
-
-  function addPoint(x, y) {
-    if (state.points.length >= 4) return; // ignore extra
-    state.points.push({x, y});
-    draw();
-  }
-
-  canvas.addEventListener('click', (ev)=>{
-    if (!clickMode) return;
-    const rect = canvas.getBoundingClientRect();
-    const x = Math.round((ev.clientX - rect.left));
-    const y = Math.round((ev.clientY - rect.top));
-    addPoint(x, y);
-  });
-
-  // Double-tap / double-click => undo last
-  let lastTap = 0;
-  canvas.addEventListener('pointerdown', (e)=>{
-    const now = Date.now();
-    if (now - lastTap < 350) { // double
-      state.points.pop();
-      draw();
-    }
-    lastTap = now;
-  });
-
-  btnReset.addEventListener('click', reset);
-
-  btnAuto.addEventListener('click', ()=>{
-    // Простая авторамка: ищем не-белый бокс по строкам/столбцам (быстро и без OpenCV)
-    const w = canvas.width, h = canvas.height;
-    const data = ctx.getImageData(0,0,w,h).data;
-    const lum = (r,g,b)=> (r*299 + g*587 + b*114)/1000; // 0..255
-    let top=h, bottom=0, left=w, right=0;
-    const whiteThr = 250; // почти белое
-    for (let y=0;y<h;y++){
-      for (let x=0;x<w;x++){
-        const i=(y*w+x)*4; const L = lum(data[i],data[i+1],data[i+2]);
-        if (L < whiteThr) { if (y<top) top=y; if (y>bottom) bottom=y; if (x<left) left=x; if (x>right) right=x; }
-      }
-    }
-    // safety margins
-    if (right-left < 20 || bottom-top < 20){ // слишком пусто — fallback рамка по краям
-      left = Math.round(w*0.05); right = Math.round(w*0.95);
-      top = Math.round(h*0.05); bottom = Math.round(h*0.95);
-    }
-    state.points = [
-      {x:left, y:top},             // TL
-      {x:right, y:top},            // TR
-      {x:right, y:bottom},         // BR
-      {x:left, y:bottom}           // BL
-    ];
-    draw();
-  });
-
-  btnSend.addEventListener('click', ()=>{
-    if (state.points.length !== 4) {
-      blink(btnSend); return;
-    }
-    // Отправляем точки в САНТИМЕТРАХ КАНВАСА (как раньше) + размеры
-    const payload = {
-      pts: state.points.flatMap(p=>[p.x, p.y]), // [x1,y1,x2,y2,x3,y3,x4,y4]
-      order: hint || 'tl-tr-br-bl',
-      canvas_w: canvas.width,
-      canvas_h: canvas.height,
-      img_w: state.naturalW,
-      img_h: state.naturalH,
-    };
-    try {
-      tg?.sendData(JSON.stringify(payload));
-    } catch (e) {
-      console.error(e);
-      alert('Не удалось отправить данные в бота');
-    }
-  });
-
-  function blink(el){ el.classList.add('ghost'); setTimeout(()=>el.classList.remove('ghost'), 280); }
-
-  // Load image
-  if (!imgURL) {
-    document.querySelector('header').textContent = 'Нет изображения: передай ?img=...';
-  } else {
-    state.img.onload = imageLoaded;
-    state.img.onerror = ()=>{ document.querySelector('header').textContent = 'Ошибка загрузки изображения'; };
-    state.img.src = imgURL;
-  }
-
-  window.addEventListener('resize', ()=>{ if (state.naturalW) { setCanvasSize(); draw(); } });
-})();
+  
+  // Отправляем координаты И размеры картинки, которую видел юзер
+  const data = {
+    pts: pts.map(p => [p.x, p.y]),
+    ref_w: img.naturalWidth,  // Важно: ширина картинки в WebApp
+    ref_h: img.naturalHeight  // Важно: высота картинки в WebApp
+  };
+  
+  tg.sendData(JSON.stringify(data));
+};
 </script>
 </body>
 </html>
